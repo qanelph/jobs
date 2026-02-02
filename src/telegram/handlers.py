@@ -1,4 +1,9 @@
+"""
+Telegram Handlers — обработка входящих сообщений.
+"""
+
 import asyncio
+from typing import Any
 
 from telethon import TelegramClient, events
 from telethon.tl.functions.messages import SetTypingRequest
@@ -7,43 +12,29 @@ from telegraph import Telegraph
 from loguru import logger
 
 from src.config import settings
-from src.claude.runner import get_session, ProgressUpdate
+from src.session import get_session
 
-MAX_TG_LENGTH = 4000  # Оставляем запас до лимита 4096
-PROGRESS_UPDATE_INTERVAL = 3  # Секунд между обновлениями прогресса
+MAX_TG_LENGTH = 4000
+TYPING_REFRESH_INTERVAL = 3.0
 
 
 class TelegramHandlers:
     """Обработчики сообщений Telegram."""
 
-    def __init__(self, client: TelegramClient):
-        self.client = client
-        self.telegraph = Telegraph()
-        self._telegraph_initialized = False
-
-    def _ensure_telegraph(self) -> None:
-        """Ленивая инициализация Telegraph аккаунта."""
-        if not self._telegraph_initialized:
-            self.telegraph.create_account(short_name="JobsBot")
-            self._telegraph_initialized = True
+    def __init__(self, client: TelegramClient) -> None:
+        self._client = client
+        self._telegraph = Telegraph()
+        self._telegraph_ready = False
 
     def register(self) -> None:
         """Регистрирует обработчики событий."""
-        self.client.add_event_handler(
-            self._handle_message,
+        self._client.add_event_handler(
+            self._on_message,
             events.NewMessage(from_users=[settings.tg_user_id]),
         )
-        logger.info(f"Registered message handler for user {settings.tg_user_id}")
+        logger.info(f"Registered handler for user {settings.tg_user_id}")
 
-    async def _set_typing(self, chat, typing: bool = True) -> None:
-        """Устанавливает статус 'печатает'."""
-        try:
-            action = SendMessageTypingAction() if typing else SendMessageCancelAction()
-            await self.client(SetTypingRequest(peer=chat, action=action))
-        except Exception as e:
-            logger.debug(f"Failed to set typing status: {e}")
-
-    async def _handle_message(self, event: events.NewMessage.Event) -> None:
+    async def _on_message(self, event: events.NewMessage.Event) -> None:
         """Обрабатывает входящее сообщение."""
         message = event.message
         prompt = message.text
@@ -51,105 +42,109 @@ class TelegramHandlers:
         if not prompt:
             return
 
-        logger.info(f"Received message: {prompt[:100]}...")
+        logger.info(f"Received: {prompt[:100]}...")
 
-        # Получаем input chat для typing status и read acknowledge
         input_chat = await event.get_input_chat()
 
-        # Отмечаем сообщение как прочитанное
-        await self.client.send_read_acknowledge(input_chat, message)
+        # Отмечаем как прочитанное
+        await self._client.send_read_acknowledge(input_chat, message)
 
-        # Включаем статус "печатает"
-        await self._set_typing(input_chat, True)
+        # Включаем typing
+        await self._set_typing(input_chat, typing=True)
 
         session = get_session()
         status_msg = None
-        last_progress_update = 0
-        current_tool = None
-        text_parts = []
+        last_typing = asyncio.get_event_loop().time()
         final_content = ""
 
         try:
             async for update in session.query_stream(prompt):
+                # Поддерживаем typing
                 now = asyncio.get_event_loop().time()
-
-                # Поддерживаем статус "печатает"
-                if now - last_progress_update > PROGRESS_UPDATE_INTERVAL:
-                    await self._set_typing(input_chat, True)
-                    last_progress_update = now
+                if now - last_typing > TYPING_REFRESH_INTERVAL:
+                    await self._set_typing(input_chat, typing=True)
+                    last_typing = now
 
                 if update.tool_name:
-                    # Показываем какой инструмент используется
-                    current_tool = update.tool_name
-                    tool_display = self._format_tool_name(current_tool)
-
+                    tool_display = self._format_tool(update.tool_name)
                     if status_msg is None:
                         status_msg = await event.reply(f"🔧 {tool_display}...")
                     else:
-                        try:
-                            await status_msg.edit(f"🔧 {tool_display}...")
-                        except Exception:
-                            pass  # Игнорируем ошибки редактирования
-
-                elif update.text and not update.is_final:
-                    text_parts.append(update.text)
+                        await self._safe_edit(status_msg, f"🔧 {tool_display}...")
 
                 elif update.is_final:
-                    final_content = update.text or "".join(text_parts)
+                    final_content = update.text or ""
 
         except Exception as e:
-            logger.error(f"Error processing message: {e}")
+            logger.error(f"Error: {e}")
             final_content = f"❌ Ошибка: {e}"
 
         finally:
-            # Выключаем статус "печатает"
-            await self._set_typing(input_chat, False)
+            await self._set_typing(input_chat, typing=False)
 
-        # Отправляем финальный ответ
-        if not final_content:
-            final_content = "🤷 Нет ответа"
-
-        if len(final_content) > MAX_TG_LENGTH:
-            # Длинный ответ → Telegraph
-            url = self._publish_to_telegraph(prompt, final_content)
-            response_text = f"📄 {url}"
-        else:
-            response_text = final_content
+        # Отправляем результат
+        response_text = self._prepare_response(prompt, final_content)
 
         if status_msg:
-            try:
-                await status_msg.edit(response_text)
-            except Exception:
-                await event.reply(response_text)
+            await self._safe_edit(status_msg, response_text)
         else:
             await event.reply(response_text)
 
-    def _format_tool_name(self, tool_name: str) -> str:
-        """Форматирует название инструмента для отображения."""
-        tool_icons = {
-            "Read": "📖 Читаю файл",
-            "Write": "✍️ Пишу файл",
+    async def _set_typing(self, chat: Any, typing: bool) -> None:
+        """Устанавливает статус typing."""
+        try:
+            action = SendMessageTypingAction() if typing else SendMessageCancelAction()
+            await self._client(SetTypingRequest(peer=chat, action=action))
+        except Exception as e:
+            logger.debug(f"Typing status error: {e}")
+
+    async def _safe_edit(self, message: Any, text: str) -> None:
+        """Безопасно редактирует сообщение."""
+        try:
+            await message.edit(text)
+        except Exception:
+            pass
+
+    def _format_tool(self, tool_name: str) -> str:
+        """Форматирует название инструмента."""
+        icons = {
+            "Read": "📖 Читаю",
+            "Write": "✍️ Пишу",
             "Edit": "✏️ Редактирую",
-            "Bash": "💻 Выполняю команду",
+            "Bash": "💻 Выполняю",
             "Glob": "🔍 Ищу файлы",
             "Grep": "🔎 Ищу в файлах",
-            "WebFetch": "🌐 Загружаю страницу",
-            "WebSearch": "🔍 Ищу в интернете",
-            "Task": "🤖 Запускаю агента",
+            "WebFetch": "🌐 Загружаю",
+            "WebSearch": "🔍 Ищу в сети",
+            "Task": "🤖 Агент",
+            "schedule_task": "📅 Планирую",
+            "list_scheduled_tasks": "📋 Список задач",
+            "cancel_scheduled_task": "❌ Отмена задачи",
         }
-        return tool_icons.get(tool_name, f"⚙️ {tool_name}")
+        return icons.get(tool_name, f"⚙️ {tool_name}")
 
-    def _publish_to_telegraph(self, title: str, content: str) -> str:
-        """Публикует контент в Telegraph и возвращает URL."""
-        self._ensure_telegraph()
+    def _prepare_response(self, prompt: str, content: str) -> str:
+        """Подготавливает ответ (Telegraph для длинных)."""
+        if not content:
+            return "🤷 Нет ответа"
+
+        if len(content) <= MAX_TG_LENGTH:
+            return content
+
+        url = self._publish_telegraph(prompt, content)
+        return f"📄 {url}"
+
+    def _publish_telegraph(self, title: str, content: str) -> str:
+        """Публикует в Telegraph."""
+        if not self._telegraph_ready:
+            self._telegraph.create_account(short_name="JobsBot")
+            self._telegraph_ready = True
 
         short_title = title[:50] + "..." if len(title) > 50 else title
-        safe_content = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        html_content = f"<pre>{safe_content}</pre>"
+        safe = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-        page = self.telegraph.create_page(
+        page = self._telegraph.create_page(
             title=short_title,
-            html_content=html_content,
+            html_content=f"<pre>{safe}</pre>",
         )
-
         return page["url"]

@@ -4,12 +4,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    """Конфигурация приложения."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+    )
 
     # Telegram
     tg_api_id: int
     tg_api_hash: str
-    tg_user_id: int  # Telegram ID владельца для авторизации команд
+    tg_user_id: int
 
     # Claude (API key опционален при OAuth)
     anthropic_api_key: str | None = None
@@ -17,6 +22,7 @@ class Settings(BaseSettings):
 
     # Paths
     data_dir: Path = Path("/data")
+    workspace_dir: Path = Path("/workspace")
 
     @property
     def session_path(self) -> Path:
@@ -27,8 +33,8 @@ class Settings(BaseSettings):
         return self.data_dir / "db.sqlite"
 
     @property
-    def workspace_dir(self) -> Path:
-        return Path("/workspace")
+    def claude_session_path(self) -> Path:
+        return self.data_dir / "claude_session_id"
 
 
 settings = Settings()

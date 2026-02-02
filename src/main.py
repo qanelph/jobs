@@ -1,3 +1,9 @@
+"""
+Jobs — Personal AI Assistant.
+
+Точка входа приложения.
+"""
+
 import asyncio
 import sys
 
@@ -7,12 +13,12 @@ from src.config import settings
 from src.telegram.client import create_client, load_session_string
 from src.telegram.handlers import TelegramHandlers
 from src.setup import run_setup, is_telegram_configured, is_claude_configured
-from src.scheduler.runner import SchedulerRunner
-from src.claude.runner import get_session
+from src.tools.scheduler import SchedulerRunner
+from src.session import get_session
 
 
 def setup_logging() -> None:
-    """Настройка логирования."""
+    """Настраивает логирование."""
     logger.remove()
     logger.add(
         sys.stderr,
@@ -21,79 +27,76 @@ def setup_logging() -> None:
     )
 
 
+async def on_scheduled_task(task_id: str, prompt: str) -> None:
+    """Callback для выполнения запланированной задачи."""
+    logger.info(f"Executing task {task_id}")
+
+    # Получаем клиент из глобального контекста
+    client = _telegram_client
+
+    await client.send_message(
+        settings.tg_user_id,
+        f"⏰ Выполняю задачу:\n{prompt}",
+    )
+
+    session = get_session()
+    response = await session.query(prompt)
+
+    content = response.content
+    if len(content) > 4000:
+        content = content[:4000] + "..."
+
+    await client.send_message(
+        settings.tg_user_id,
+        f"📋 Результат [{task_id}]:\n{content}",
+    )
+
+
+# Глобальная ссылка на клиент для scheduler callback
+_telegram_client = None
+
+
 async def main() -> None:
     """Точка входа."""
-    setup_logging()
+    global _telegram_client
 
+    setup_logging()
     logger.info("Starting Jobs - Personal AI Assistant")
 
-    # Проверяем нужен ли setup
-    needs_setup = not is_telegram_configured() or not is_claude_configured()
-
-    if needs_setup:
+    # Setup при первом запуске
+    if not is_telegram_configured() or not is_claude_configured():
         logger.info("Требуется первоначальная настройка")
-        success = await run_setup()
-        if not success:
-            logger.error("Setup не завершён, выход")
+        if not await run_setup():
+            logger.error("Setup не завершён")
             sys.exit(1)
 
-    # Загружаем сессию и запускаем бота
+    # Создаём клиент
     session_string = load_session_string()
     client = create_client(session_string)
+    _telegram_client = client
 
     try:
         await client.connect()
 
         if not await client.is_user_authorized():
-            logger.error("Telegram сессия невалидна. Удалите data/telethon.session и перезапустите")
+            logger.error("Telegram сессия невалидна. Удалите data/telethon.session")
             sys.exit(1)
 
         me = await client.get_me()
         logger.info(f"Logged in as {me.first_name} (ID: {me.id})")
 
         if me.id != settings.tg_user_id:
-            logger.warning(
-                f"Logged in user ID ({me.id}) != configured TG_USER_ID ({settings.tg_user_id})"
-            )
-            logger.warning("Бот будет отвечать только на сообщения от TG_USER_ID")
+            logger.warning(f"Logged user {me.id} != TG_USER_ID {settings.tg_user_id}")
 
     except Exception as e:
-        logger.error(f"Ошибка подключения: {e}")
+        logger.error(f"Connection error: {e}")
         raise
-
-    # Callback для выполнения запланированных задач
-    async def on_scheduled_task(task_id: str, prompt: str) -> None:
-        """Выполняет запланированную задачу и отправляет результат."""
-        logger.info(f"Executing scheduled task {task_id}")
-
-        # Уведомляем пользователя о начале
-        await client.send_message(
-            settings.tg_user_id,
-            f"⏰ Выполняю запланированную задачу:\n{prompt}"
-        )
-
-        # Выполняем через Claude
-        session = get_session()
-        response = await session.query(prompt)
-
-        # Отправляем результат
-        if len(response.content) > 4000:
-            # TODO: Telegraph для длинных ответов
-            await client.send_message(
-                settings.tg_user_id,
-                f"📋 Результат задачи {task_id}:\n{response.content[:4000]}..."
-            )
-        else:
-            await client.send_message(
-                settings.tg_user_id,
-                f"📋 Результат задачи {task_id}:\n{response.content}"
-            )
 
     # Запускаем scheduler
     scheduler = SchedulerRunner(on_task_due=on_scheduled_task)
     await scheduler.start()
 
-    # Регистрируем обработчики
+    # Регистрируем handlers
     handlers = TelegramHandlers(client)
     handlers.register()
 

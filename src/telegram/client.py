@@ -1,5 +1,6 @@
-import functools
-from pathlib import Path
+"""
+Telegram Client — создание и управление Telethon клиентом.
+"""
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -8,7 +9,15 @@ from src.config import settings
 
 
 def create_client(session: str | None = None) -> TelegramClient:
-    """Создаёт TelegramClient с настройками из конфига."""
+    """
+    Создаёт TelegramClient с настройками.
+
+    Args:
+        session: String session для восстановления авторизации.
+
+    Returns:
+        Настроенный TelegramClient.
+    """
     session_obj = StringSession(session) if session else StringSession()
 
     return TelegramClient(
@@ -23,9 +32,9 @@ def create_client(session: str | None = None) -> TelegramClient:
 
 def load_session_string() -> str | None:
     """Загружает сохранённую сессию из файла."""
-    session_file = settings.session_path
-    if session_file.exists():
-        return session_file.read_text().strip()
+    if settings.session_path.exists():
+        content = settings.session_path.read_text().strip()
+        return content if content else None
     return None
 
 

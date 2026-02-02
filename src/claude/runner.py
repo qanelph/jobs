@@ -14,6 +14,7 @@ from claude_agent_sdk import (
 from loguru import logger
 
 from src.config import settings
+from src.scheduler.tools import create_scheduler_server
 
 
 SESSION_FILE = settings.data_dir / "claude_session_id"
@@ -63,6 +64,7 @@ class ClaudeSession:
 
     def __init__(self):
         self._session_id: str | None = _load_session_id()
+        self._scheduler_server = create_scheduler_server()
 
     def _get_options(self) -> ClaudeAgentOptions:
         """Создаёт опции для клиента."""
@@ -77,6 +79,14 @@ class ClaudeSession:
             cwd=Path(settings.workspace_dir),
             permission_mode="bypassPermissions",
             env=env,
+            # MCP серверы с кастомными tools
+            mcp_servers={"scheduler": self._scheduler_server},
+            # Разрешаем использовать scheduler tools
+            allowed_tools=[
+                "mcp__scheduler__schedule_task",
+                "mcp__scheduler__list_scheduled_tasks",
+                "mcp__scheduler__cancel_scheduled_task",
+            ],
         )
 
         # Если есть предыдущая сессия — продолжаем её

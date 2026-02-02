@@ -7,6 +7,8 @@ from src.config import settings
 from src.telegram.client import create_client, load_session_string
 from src.telegram.handlers import TelegramHandlers
 from src.setup import run_setup, is_telegram_configured, is_claude_configured
+from src.scheduler.runner import SchedulerRunner
+from src.claude.runner import get_session
 
 
 def setup_logging() -> None:
@@ -59,13 +61,48 @@ async def main() -> None:
         logger.error(f"Ошибка подключения: {e}")
         raise
 
+    # Callback для выполнения запланированных задач
+    async def on_scheduled_task(task_id: str, prompt: str) -> None:
+        """Выполняет запланированную задачу и отправляет результат."""
+        logger.info(f"Executing scheduled task {task_id}")
+
+        # Уведомляем пользователя о начале
+        await client.send_message(
+            settings.tg_user_id,
+            f"⏰ Выполняю запланированную задачу:\n{prompt}"
+        )
+
+        # Выполняем через Claude
+        session = get_session()
+        response = await session.query(prompt)
+
+        # Отправляем результат
+        if len(response.content) > 4000:
+            # TODO: Telegraph для длинных ответов
+            await client.send_message(
+                settings.tg_user_id,
+                f"📋 Результат задачи {task_id}:\n{response.content[:4000]}..."
+            )
+        else:
+            await client.send_message(
+                settings.tg_user_id,
+                f"📋 Результат задачи {task_id}:\n{response.content}"
+            )
+
+    # Запускаем scheduler
+    scheduler = SchedulerRunner(on_task_due=on_scheduled_task)
+    await scheduler.start()
+
     # Регистрируем обработчики
     handlers = TelegramHandlers(client)
     handlers.register()
 
     logger.info("Bot is running. Send me a message!")
 
-    await client.run_until_disconnected()
+    try:
+        await client.run_until_disconnected()
+    finally:
+        await scheduler.stop()
 
 
 if __name__ == "__main__":

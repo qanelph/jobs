@@ -15,6 +15,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 # Установка Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
+# Создаём non-root пользователя (Claude Code не работает под root)
+RUN useradd -m -s /bin/bash jobs
+
 # Python зависимости
 WORKDIR /app
 COPY pyproject.toml .
@@ -23,10 +26,13 @@ RUN pip install --no-cache-dir .
 # Копируем код
 COPY src/ /app/src/
 
-# Создаём рабочие директории
-RUN mkdir -p /workspace /data /root/.claude
+# Создаём рабочие директории с правами для пользователя
+RUN mkdir -p /workspace /data /home/jobs/.claude && \
+    chown -R jobs:jobs /workspace /data /home/jobs/.claude /app
 
-# Рабочая директория для Claude
+# Переключаемся на non-root пользователя
+USER jobs
+
 WORKDIR /app
 
 CMD ["python", "-m", "src.main"]

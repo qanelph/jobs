@@ -10,6 +10,7 @@ dependencies = [
     "apscheduler>=3.10.0",
     "telegraph>=2.2.0",
     "loguru>=0.7.0",
+    "claude-agent-sdk>=0.1.0",
 ]
 
 [build-system]

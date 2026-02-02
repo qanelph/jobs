@@ -4,7 +4,7 @@ services:
     env_file: .env
     volumes:
       - ./data:/data              # Персистентные данные (сессия, БД)
-      - ./data/.claude:/root/.claude  # Claude Code credentials
+      - ./data/.claude:/home/jobs/.claude  # Claude Code credentials
       - jobs-workspace:/workspace  # Рабочая директория Claude
     restart: unless-stopped
     stdin_open: true              # Для интерактивного логина

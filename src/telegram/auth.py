@@ -1,8 +1,20 @@
+import getpass
+import sys
+
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 from loguru import logger
 
 from src.telegram.client import save_session_string
+
+
+def safe_input(prompt: str) -> str:
+    """Безопасный ввод с обработкой кодировки."""
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    value = sys.stdin.readline().strip()
+    # Убираем возможные surrogate characters
+    return value.encode("utf-8", errors="ignore").decode("utf-8")
 
 
 async def interactive_auth(client: TelegramClient) -> bool:
@@ -19,15 +31,15 @@ async def interactive_auth(client: TelegramClient) -> bool:
         logger.info("Уже авторизован в Telegram")
         return False
 
-    phone = input("Введи номер телефона (+7...): ").strip()
+    phone = safe_input("Введи номер телефона (+7...): ")
     await client.send_code_request(phone)
 
-    code = input("Введи код из Telegram: ").strip()
+    code = safe_input("Введи код из Telegram: ")
 
     try:
         await client.sign_in(phone, code)
     except SessionPasswordNeededError:
-        password = input("Введи 2FA пароль: ").strip()
+        password = safe_input("Введи 2FA пароль: ")
         await client.sign_in(password=password)
 
     # Сохраняем сессию

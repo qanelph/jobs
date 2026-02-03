@@ -14,11 +14,12 @@ from src.telegram.client import create_client, load_session_string
 from src.telegram.auth import interactive_auth
 
 
-CLAUDE_CONFIG_DIR = Path.home() / ".claude"
+# Claude хранит credentials в /home/jobs/.claude (монтируется из ./data/.claude)
+# Path.home() может быть /root если запущен от root
+CLAUDE_CONFIG_DIR = Path("/home/jobs/.claude")
 CLAUDE_AUTH_FILES = [
     CLAUDE_CONFIG_DIR / "credentials.json",
     CLAUDE_CONFIG_DIR / ".credentials.json",
-    CLAUDE_CONFIG_DIR / "settings.json",
 ]
 
 
@@ -41,6 +42,7 @@ def _setup_claude_interactive() -> bool:
 
     env = {
         **os.environ,
+        "HOME": "/home/jobs",  # Claude Code ищет credentials в $HOME/.claude
         "HTTP_PROXY": settings.http_proxy,
         "HTTPS_PROXY": settings.http_proxy,
     }

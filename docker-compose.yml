@@ -4,6 +4,7 @@ services:
     env_file: .env
     environment:
       - TZ=${TZ:-Europe/Moscow}
+      - HOME=/home/jobs
     volumes:
       - ./data:/data              # Персистентные данные (сессия, БД)
       - ./data/.claude:/home/jobs/.claude  # Claude Code credentials

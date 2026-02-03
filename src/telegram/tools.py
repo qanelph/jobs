@@ -134,11 +134,11 @@ async def tg_forward_message(args: dict[str, Any]) -> dict[str, Any]:
 
 @tool(
     "tg_read_channel",
-    "Read recent posts from a channel or public group.",
+    "Read recent posts from a channel or public group with reactions.",
     {"channel": str, "limit": int},
 )
 async def tg_read_channel(args: dict[str, Any]) -> dict[str, Any]:
-    """Читает посты канала."""
+    """Читает посты канала с реакциями."""
     channel = args.get("channel")
     limit = args.get("limit", 10)
 
@@ -161,7 +161,22 @@ async def tg_read_channel(args: dict[str, Any]) -> dict[str, Any]:
             date = msg.date.strftime("%d.%m %H:%M")
             text = msg.text[:200] + "..." if msg.text and len(msg.text) > 200 else (msg.text or "[медиа]")
             views = f" 👁 {msg.views}" if msg.views else ""
-            lines.append(f"[{msg.id}] {date}{views}\n{text}\n")
+
+            # Реакции
+            reactions_str = ""
+            if msg.reactions and msg.reactions.results:
+                reactions = []
+                for r in msg.reactions.results:
+                    emoji = r.reaction.emoticon if hasattr(r.reaction, 'emoticon') else "👍"
+                    reactions.append(f"{emoji}{r.count}")
+                reactions_str = f"\n   Реакции: {' '.join(reactions)}"
+
+            # Комменты
+            comments_str = ""
+            if msg.replies and msg.replies.comments:
+                comments_str = f" 💬 {msg.replies.replies}"
+
+            lines.append(f"[{msg.id}] {date}{views}{comments_str}\n{text}{reactions_str}\n")
 
         return _text("\n".join(lines))
     except Exception as e:
@@ -170,11 +185,11 @@ async def tg_read_channel(args: dict[str, Any]) -> dict[str, Any]:
 
 @tool(
     "tg_read_comments",
-    "Read comments on a channel post.",
+    "Read comments on a channel post with user details (ID, username).",
     {"channel": str, "post_id": int, "limit": int},
 )
 async def tg_read_comments(args: dict[str, Any]) -> dict[str, Any]:
-    """Читает комментарии к посту."""
+    """Читает комментарии к посту с деталями об авторах."""
     channel = args.get("channel")
     post_id = args.get("post_id")
     limit = args.get("limit", 20)
@@ -200,10 +215,10 @@ async def tg_read_comments(args: dict[str, Any]) -> dict[str, Any]:
 
         for msg in comments:
             sender = await msg.get_sender()
-            name = _format_sender(sender)
+            sender_info = _format_sender_detailed(sender)
             date = msg.date.strftime("%d.%m %H:%M")
             text = msg.text[:150] + "..." if msg.text and len(msg.text) > 150 else (msg.text or "[медиа]")
-            lines.append(f"{name} ({date}):\n{text}\n")
+            lines.append(f"{sender_info} ({date}):\n{text}\n")
 
         return _text("\n".join(lines))
     except Exception as e:
@@ -472,7 +487,7 @@ TELEGRAM_TOOL_NAMES = [
 
 
 def _format_sender(sender) -> str:
-    """Форматирует отправителя."""
+    """Форматирует отправителя (краткий вариант)."""
     if sender is None:
         return "Unknown"
     if isinstance(sender, User):
@@ -481,6 +496,23 @@ def _format_sender(sender) -> str:
     if isinstance(sender, Channel):
         return sender.title
     return str(sender.id)
+
+
+def _format_sender_detailed(sender) -> str:
+    """Форматирует отправителя с ID и username."""
+    if sender is None:
+        return "Unknown"
+
+    if isinstance(sender, User):
+        name = f"{sender.first_name or ''} {sender.last_name or ''}".strip() or "NoName"
+        username = f"@{sender.username}" if sender.username else "no_username"
+        return f"{name} [{username}, ID:{sender.id}]"
+
+    if isinstance(sender, Channel):
+        username = f"@{sender.username}" if sender.username else "no_username"
+        return f"{sender.title} [{username}, ID:{sender.id}]"
+
+    return f"Unknown [ID:{sender.id}]"
 
 
 def _format_status(status) -> str:

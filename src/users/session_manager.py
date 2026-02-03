@@ -139,36 +139,27 @@ class UserSession:
         text_buffer: list[str] = []
 
         try:
-            logger.debug(f"[{self.telegram_id}] Starting query: {prompt[:50]}...")
             async with ClaudeSDKClient(options=options) as client:
                 await client.query(prompt)
-                logger.debug(f"[{self.telegram_id}] Query sent, waiting for response...")
 
                 async for message in client.receive_response():
-                    logger.debug(f"[{self.telegram_id}] Received: {type(message).__name__}")
-
                     if isinstance(message, AssistantMessage):
                         for block in message.content:
                             if isinstance(block, TextBlock):
-                                logger.debug(f"[{self.telegram_id}] TextBlock: {block.text[:50]}...")
                                 text_buffer.append(block.text)
                                 yield (block.text, None, False)
                             elif isinstance(block, ToolUseBlock):
-                                logger.debug(f"[{self.telegram_id}] ToolUse: {block.name}")
                                 yield (None, block.name, False)
 
                     elif isinstance(message, ResultMessage):
-                        logger.debug(f"[{self.telegram_id}] ResultMessage, session_id={message.session_id}")
                         if message.session_id:
                             self._session_id = message.session_id
                             self._save_session_id(message.session_id)
 
-                        final_text = "".join(text_buffer)
-                        logger.debug(f"[{self.telegram_id}] Final text length: {len(final_text)}")
-                        yield (final_text, None, True)
+                        yield ("".join(text_buffer), None, True)
 
         except Exception as e:
-            logger.error(f"Claude error [{self.telegram_id}]: {e}", exc_info=True)
+            logger.error(f"Claude error [{self.telegram_id}]: {e}")
             yield (f"Ошибка: {e}", None, True)
 
     def reset(self) -> None:

@@ -10,7 +10,7 @@ import aiosqlite
 from loguru import logger
 
 from src.config import settings
-from .models import ExternalUser, UserTask
+from .models import ExternalUser, UserTask, ConversationTask
 
 
 class UsersRepository:
@@ -77,6 +77,22 @@ class UsersRepository:
             )
         """)
 
+        # Conversation Tasks (cross-session communication)
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_tasks (
+                id TEXT PRIMARY KEY,
+                owner_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                task_type TEXT DEFAULT 'custom',
+                title TEXT DEFAULT '',
+                context TEXT DEFAULT '{}',
+                status TEXT DEFAULT 'pending',
+                result TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # Индексы
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON user_tasks(assignee_id)"
@@ -86,6 +102,9 @@ class UsersRepository:
         )
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_users_username ON external_users(username)"
+        )
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conv_user ON conversation_tasks(user_id, status)"
         )
 
         await self._db.commit()
@@ -506,6 +525,93 @@ class UsersRepository:
             created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.now(),
             created_by=row["created_by"],
         )
+
+    # =========================================================================
+    # Conversation Tasks (cross-session)
+    # =========================================================================
+
+    async def create_conversation_task(
+        self,
+        owner_id: int,
+        user_id: int,
+        task_type: str = "custom",
+        title: str = "",
+        context: dict | None = None,
+    ) -> ConversationTask:
+        """Создаёт задачу согласования между owner и user."""
+        import json
+        db = await self._get_db()
+        task_id = str(uuid.uuid4())[:8]
+        now = datetime.now().isoformat()
+        context_json = json.dumps(context or {}, ensure_ascii=False)
+
+        await db.execute(
+            """
+            INSERT INTO conversation_tasks (id, owner_id, user_id, task_type, title, context, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (task_id, owner_id, user_id, task_type, title, context_json, now, now),
+        )
+        await db.commit()
+        logger.info(f"ConversationTask created: [{task_id}] owner={owner_id} user={user_id} type={task_type}")
+
+        return await self.get_conversation_task(task_id)
+
+    async def get_conversation_task(self, task_id: str) -> ConversationTask | None:
+        """Получает задачу согласования по ID."""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT * FROM conversation_tasks WHERE id = ?",
+            (task_id,),
+        )
+        row = await cursor.fetchone()
+        if row:
+            return ConversationTask.from_row(dict(row))
+        return None
+
+    async def get_active_conversation_tasks(self, user_id: int) -> list[ConversationTask]:
+        """Получает активные задачи согласования для user'а."""
+        db = await self._get_db()
+        cursor = await db.execute(
+            """
+            SELECT * FROM conversation_tasks
+            WHERE user_id = ? AND status IN ('pending', 'in_progress')
+            ORDER BY created_at DESC
+            """,
+            (user_id,),
+        )
+        return [ConversationTask.from_row(dict(row)) for row in await cursor.fetchall()]
+
+    async def update_conversation_task(
+        self,
+        task_id: str,
+        status: str | None = None,
+        result: dict | None = None,
+    ) -> bool:
+        """Обновляет задачу согласования."""
+        import json
+        db = await self._get_db()
+        now = datetime.now().isoformat()
+
+        updates = ["updated_at = ?"]
+        params = [now]
+
+        if status:
+            updates.append("status = ?")
+            params.append(status)
+
+        if result is not None:
+            updates.append("result = ?")
+            params.append(json.dumps(result, ensure_ascii=False))
+
+        params.append(task_id)
+
+        cursor = await db.execute(
+            f"UPDATE conversation_tasks SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        await db.commit()
+        return cursor.rowcount > 0
 
     async def close(self) -> None:
         """Закрывает соединение."""

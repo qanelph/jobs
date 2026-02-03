@@ -4,7 +4,8 @@ Models — модели данных для внешних пользовате�
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Any
+import json
 
 
 @dataclass
@@ -60,3 +61,48 @@ class UserTask:
         if self.deadline and self.status not in ("completed",):
             return datetime.now() > self.deadline
         return False
+
+
+@dataclass
+class ConversationTask:
+    """
+    Задача согласования между owner и user.
+
+    Позволяет owner'у делегировать общение с user'ом,
+    при этом user session получает контекст задачи.
+    """
+
+    id: str
+    owner_id: int                 # Кто создал задачу
+    user_id: int                  # С кем общаемся
+    task_type: Literal["meeting", "question", "custom"] = "custom"
+    title: str = ""               # Краткое описание для user
+    context: dict = field(default_factory=dict)  # Контекст для user session
+    status: Literal["pending", "in_progress", "completed", "cancelled"] = "pending"
+    result: dict | None = None    # Результат согласования
+    created_at: datetime = field(default_factory=datetime.now)
+    updated_at: datetime = field(default_factory=datetime.now)
+
+    def context_json(self) -> str:
+        """Сериализует context в JSON."""
+        return json.dumps(self.context, ensure_ascii=False)
+
+    def result_json(self) -> str | None:
+        """Сериализует result в JSON."""
+        return json.dumps(self.result, ensure_ascii=False) if self.result else None
+
+    @staticmethod
+    def from_row(row: dict) -> "ConversationTask":
+        """Создаёт из строки БД."""
+        return ConversationTask(
+            id=row["id"],
+            owner_id=row["owner_id"],
+            user_id=row["user_id"],
+            task_type=row["task_type"],
+            title=row["title"],
+            context=json.loads(row["context"]) if row["context"] else {},
+            status=row["status"],
+            result=json.loads(row["result"]) if row["result"] else None,
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )

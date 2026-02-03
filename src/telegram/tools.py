@@ -60,7 +60,7 @@ async def tg_send_message(args: dict[str, Any]) -> dict[str, Any]:
             message,
             reply_to=reply_to if reply_to else None,
         )
-        return _text(f"✅ Сообщение отправлено (ID: {result.id})")
+        return _text(f"Сообщение отправлено (ID: {result.id})")
     except Exception as e:
         return _error(f"Ошибка отправки: {e}")
 
@@ -92,7 +92,7 @@ async def tg_send_media(args: dict[str, Any]) -> dict[str, Any]:
             path,
             caption=caption,
         )
-        return _text(f"✅ Медиа отправлено (ID: {result.id})")
+        return _text(f"Медиа отправлено (ID: {result.id})")
     except Exception as e:
         return _error(f"Ошибка отправки: {e}")
 
@@ -122,7 +122,7 @@ async def tg_forward_message(args: dict[str, Any]) -> dict[str, Any]:
             message_id,
             from_entity,
         )
-        return _text(f"✅ Сообщение переслано")
+        return _text("Сообщение переслано")
     except Exception as e:
         return _error(f"Ошибка пересылки: {e}")
 
@@ -155,12 +155,12 @@ async def tg_read_channel(args: dict[str, Any]) -> dict[str, Any]:
         if not messages:
             return _text("Нет сообщений")
 
-        lines = [f"📢 Последние {len(messages)} постов из {channel}:\n"]
+        lines = [f"Последние {len(messages)} постов из {channel}:\n"]
 
         for msg in messages:
             date = msg.date.strftime("%d.%m %H:%M")
             text = msg.text[:200] + "..." if msg.text and len(msg.text) > 200 else (msg.text or "[медиа]")
-            views = f" 👁 {msg.views}" if msg.views else ""
+            views = f" | {msg.views} views" if msg.views else ""
 
             # Реакции
             reactions_str = ""
@@ -174,7 +174,7 @@ async def tg_read_channel(args: dict[str, Any]) -> dict[str, Any]:
             # Комменты
             comments_str = ""
             if msg.replies and msg.replies.comments:
-                comments_str = f" 💬 {msg.replies.replies}"
+                comments_str = f" | {msg.replies.replies} comments"
 
             lines.append(f"[{msg.id}] {date}{views}{comments_str}\n{text}{reactions_str}\n")
 
@@ -211,7 +211,7 @@ async def tg_read_comments(args: dict[str, Any]) -> dict[str, Any]:
         if not comments:
             return _text("Нет комментариев")
 
-        lines = [f"💬 Комментарии к посту {post_id}:\n"]
+        lines = [f"Комментарии к посту {post_id}:\n"]
 
         for msg in comments:
             sender = await msg.get_sender()
@@ -248,7 +248,7 @@ async def tg_read_chat(args: dict[str, Any]) -> dict[str, Any]:
         if not messages:
             return _text("Нет сообщений")
 
-        lines = [f"💬 История чата ({len(messages)} сообщений):\n"]
+        lines = [f"История чата ({len(messages)} сообщений):\n"]
 
         for msg in reversed(messages):  # Хронологический порядок
             sender = await msg.get_sender()
@@ -290,7 +290,7 @@ async def tg_search_messages(args: dict[str, Any]) -> dict[str, Any]:
         if not messages:
             return _text(f"Ничего не найдено по запросу '{query}'")
 
-        lines = [f"🔍 Найдено {len(messages)} сообщений по '{query}':\n"]
+        lines = [f"Найдено {len(messages)} сообщений по '{query}':\n"]
 
         for msg in messages:
             sender = await msg.get_sender()
@@ -335,7 +335,7 @@ async def tg_get_user_info(args: dict[str, Any]) -> dict[str, Any]:
             verified = "да" if entity.verified else "нет"
 
             return _text(
-                f"👤 Пользователь:\n"
+                f"Пользователь:\n"
                 f"ID: {entity.id}\n"
                 f"Имя: {name}\n"
                 f"Username: {username}\n"
@@ -351,7 +351,7 @@ async def tg_get_user_info(args: dict[str, Any]) -> dict[str, Any]:
             members = getattr(entity, 'participants_count', 'неизвестно')
 
             return _text(
-                f"📢 Канал/Группа:\n"
+                f"Канал/Группа:\n"
                 f"ID: {entity.id}\n"
                 f"Название: {title}\n"
                 f"Username: {username}\n"
@@ -383,23 +383,23 @@ async def tg_get_dialogs(args: dict[str, Any]) -> dict[str, Any]:
         if not dialogs:
             return _text("Нет диалогов")
 
-        lines = [f"💬 Диалоги ({len(dialogs)}):\n"]
+        lines = [f"Диалоги ({len(dialogs)}):\n"]
 
         for dialog in dialogs:
             entity = dialog.entity
-            unread = f" 🔴 {dialog.unread_count}" if dialog.unread_count else ""
+            unread = f" [{dialog.unread_count} unread]" if dialog.unread_count else ""
 
             if isinstance(entity, User):
                 name = f"{entity.first_name or ''} {entity.last_name or ''}".strip()
                 username = f" @{entity.username}" if entity.username else ""
-                lines.append(f"👤 {name}{username}{unread}")
+                lines.append(f"[user] {name}{username}{unread}")
             elif isinstance(entity, Channel):
                 username = f" @{entity.username}" if entity.username else ""
-                lines.append(f"📢 {entity.title}{username}{unread}")
+                lines.append(f"[channel] {entity.title}{username}{unread}")
             elif isinstance(entity, Chat):
-                lines.append(f"👥 {entity.title}{unread}")
+                lines.append(f"[group] {entity.title}{unread}")
             else:
-                lines.append(f"❓ {dialog.name}{unread}")
+                lines.append(f"[?] {dialog.name}{unread}")
 
         return _text("\n".join(lines))
     except Exception as e:
@@ -445,7 +445,7 @@ async def tg_download_media(args: dict[str, Any]) -> dict[str, Any]:
 
         downloaded = await client.download_media(msg, path)
 
-        return _text(f"✅ Скачано: {downloaded}")
+        return _text(f"Скачано: {downloaded}")
     except Exception as e:
         return _error(f"Ошибка скачивания: {e}")
 
@@ -543,4 +543,4 @@ def _text(text: str) -> dict[str, Any]:
 
 
 def _error(text: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": f"❌ {text}"}], "is_error": True}
+    return {"content": [{"type": "text", "text": f"Error: {text}"}], "is_error": True}

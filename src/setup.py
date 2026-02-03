@@ -54,10 +54,10 @@ def _setup_claude_interactive() -> bool:
     )
 
     if is_claude_configured():
-        logger.info("✅ Claude Code авторизован")
+        logger.info("Claude Code авторизован")
         return True
 
-    logger.warning("❌ Credentials не найдены")
+    logger.warning("Credentials не найдены")
     return False
 
 
@@ -84,7 +84,7 @@ async def run_setup() -> bool:
         True если настройка успешна.
     """
     print("=" * 50)
-    print("🚀 Jobs Setup")
+    print("Jobs Setup")
     print("=" * 50)
     print()
 
@@ -92,7 +92,7 @@ async def run_setup() -> bool:
     settings.workspace_dir.mkdir(parents=True, exist_ok=True)
 
     # Telegram
-    print("📱 Шаг 1/2: Telegram")
+    print("Шаг 1/2: Telegram")
     print("-" * 30)
 
     if is_telegram_configured():
@@ -115,7 +115,7 @@ async def run_setup() -> bool:
     print()
 
     # Claude
-    print("🤖 Шаг 2/2: Claude Code")
+    print("Шаг 2/2: Claude Code")
     print("-" * 30)
 
     if is_claude_configured():
@@ -126,7 +126,7 @@ async def run_setup() -> bool:
 
     print()
     print("=" * 50)
-    print("✅ Setup завершён!")
+    print("Setup завершён!")
     print("=" * 50)
 
     return True

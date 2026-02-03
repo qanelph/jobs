@@ -124,9 +124,9 @@ class UserSession:
 
         except Exception as e:
             logger.error(f"Claude error [{self.telegram_id}]: {e}")
-            return f"❌ Ошибка: {e}"
+            return f"Ошибка: {e}"
 
-        return "".join(text_parts) or "🤷 Нет ответа"
+        return "".join(text_parts) or "Нет ответа"
 
     async def query_stream(self, prompt: str) -> AsyncIterator[tuple[str | None, str | None, bool]]:
         """
@@ -160,7 +160,7 @@ class UserSession:
 
         except Exception as e:
             logger.error(f"Claude error [{self.telegram_id}]: {e}")
-            yield (f"❌ Ошибка: {e}", None, True)
+            yield (f"Ошибка: {e}", None, True)
 
     def reset(self) -> None:
         """Сбрасывает сессию."""

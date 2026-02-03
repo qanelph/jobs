@@ -60,15 +60,3 @@ class UserTask:
         if self.deadline and self.status not in ("completed",):
             return datetime.now() > self.deadline
         return False
-
-    def format_status_emoji(self) -> str:
-        """Эмодзи статуса."""
-        mapping = {
-            "pending": "⏳",
-            "accepted": "✅",
-            "completed": "✔️",
-            "overdue": "⚠️",
-        }
-        if self.is_overdue and self.status != "completed":
-            return "⚠️"
-        return mapping.get(self.status, "❓")

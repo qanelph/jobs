@@ -179,7 +179,7 @@ async def schedule_task(args: dict[str, Any]) -> dict[str, Any]:
     repeat_str = f", повтор каждые {repeat_seconds}с" if repeat_seconds else ""
     logger.info(f"Scheduled [{task_id}]: {prompt[:40]}... at {time_str}{repeat_str}")
 
-    return _text(f"✅ [{task_id}] {time_str}{repeat_str}\n{prompt}")
+    return _text(f"[{task_id}] {time_str}{repeat_str}\n{prompt}")
 
 
 @tool("list_scheduled_tasks", "List pending tasks", {})
@@ -205,7 +205,7 @@ async def cancel_scheduled_task(args: dict[str, Any]) -> dict[str, Any]:
         return _error("task_id обязателен")
 
     if await get_storage().cancel(task_id):
-        return _text(f"✅ [{task_id}] отменена")
+        return _text(f"[{task_id}] отменена")
     return _error(f"[{task_id}] не найдена")
 
 
@@ -282,4 +282,4 @@ def _text(text: str) -> dict[str, Any]:
 
 
 def _error(text: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": f"❌ {text}"}], "is_error": True}
+    return {"content": [{"type": "text", "text": f"Error: {text}"}], "is_error": True}

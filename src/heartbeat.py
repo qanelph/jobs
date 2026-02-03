@@ -165,7 +165,7 @@ class HeartbeatRunner:
                 days = (datetime.now() - task.deadline).days if task.deadline else 0
                 task_lines.append(f"• {task.description[:50]} (просрочено {days} дн.)")
 
-            reminder = f"⏰ Напоминание о просроченных задачах:\n\n" + "\n".join(task_lines)
+            reminder = "Напоминание о просроченных задачах:\n\n" + "\n".join(task_lines)
             if len(tasks) > 3:
                 reminder += f"\n\n...и ещё {len(tasks) - 3} задач(и)"
 

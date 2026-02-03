@@ -93,7 +93,7 @@ async def memory_append(args: dict[str, Any]) -> dict[str, Any]:
     storage = get_storage()
     storage.append_to_memory(content)
 
-    return _text(f"✅ Записано в MEMORY.md")
+    return _text("Записано в MEMORY.md")
 
 
 @tool(
@@ -113,7 +113,7 @@ async def memory_log(args: dict[str, Any]) -> dict[str, Any]:
     storage = get_storage()
     storage.append_to_daily_log(content)
 
-    return _text(f"✅ Записано в дневной лог")
+    return _text("Записано в дневной лог")
 
 
 @tool(
@@ -156,7 +156,7 @@ async def memory_reindex(args: dict[str, Any]) -> dict[str, Any]:
     files = storage.list_memory_files()
     count = await index.index_all(files)
 
-    return _text(f"✅ Проиндексировано {count} чанков из {len(files)} файлов")
+    return _text(f"Проиндексировано {count} чанков из {len(files)} файлов")
 
 
 # Экспорт
@@ -185,4 +185,4 @@ def _text(text: str) -> dict[str, Any]:
 
 
 def _error(text: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": f"❌ {text}"}], "is_error": True}
+    return {"content": [{"type": "text", "text": f"Error: {text}"}], "is_error": True}

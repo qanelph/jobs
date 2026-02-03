@@ -35,7 +35,7 @@ async def mcp_search(args: dict[str, Any]) -> dict[str, Any]:
     if not servers:
         return _text(f"Ничего не найдено по запросу '{query}'")
 
-    lines = [f"🔍 Найдено {len(servers)} MCP серверов:\n"]
+    lines = [f"Найдено {len(servers)} MCP серверов:\n"]
 
     for s in servers:
         install = s.install_command or "см. документацию"
@@ -89,16 +89,16 @@ async def mcp_install(args: dict[str, Any]) -> dict[str, Any]:
     save_mcp_config()
 
     lines = [
-        f"✅ MCP сервер **{name}** добавлен!",
+        f"MCP сервер {name} добавлен.",
         "",
         f"Команда: `{command} {args_str}`".strip(),
         "",
-        "⚠️ Если серверу нужны credentials (API ключи, connection strings),",
+        "Если серверу нужны credentials (API ключи, connection strings),",
         "используй `mcp_set_env` чтобы их задать.",
         "",
         "Пример: `mcp_set_env name=postgres key=DATABASE_URL value=postgresql://...`",
         "",
-        "🔄 **Сессия будет перезапущена** при следующем сообщении для применения изменений.",
+        "Сессия будет перезапущена при следующем сообщении.",
     ]
 
     # Сбрасываем сессию чтобы новые MCP подхватились
@@ -138,7 +138,7 @@ async def mcp_set_env(args: dict[str, Any]) -> dict[str, Any]:
     from src.users import get_session_manager
     get_session_manager().reset_all()
 
-    return _text(f"✅ Установлено {name}.env.{key}\n\n🔄 Сессия перезапустится при следующем сообщении.")
+    return _text(f"Установлено {name}.env.{key}. Сессия перезапустится при следующем сообщении.")
 
 
 @tool(
@@ -154,11 +154,11 @@ async def mcp_list(args: dict[str, Any]) -> dict[str, Any]:
     if not servers:
         return _text("Нет подключённых MCP серверов.\n\nИспользуй `mcp_search` чтобы найти и подключить.")
 
-    lines = ["📦 **MCP серверы:**\n"]
+    lines = ["MCP серверы:\n"]
 
     for s in servers:
-        status = "✅" if s["enabled"] else "⏸️"
-        lines.append(f"{status} **{s['name']}** — {s['title']}")
+        status = "[on]" if s["enabled"] else "[off]"
+        lines.append(f"{status} {s['name']} — {s['title']}")
         if s["description"]:
             lines.append(f"   {s['description']}")
         lines.append(f"   `{s['command']}`")
@@ -187,7 +187,7 @@ async def mcp_enable(args: dict[str, Any]) -> dict[str, Any]:
         save_mcp_config()
         from src.users import get_session_manager
         get_session_manager().reset_all()
-        return _text(f"✅ MCP сервер **{name}** включён\n\n🔄 Сессия перезапустится при следующем сообщении.")
+        return _text(f"MCP сервер {name} включён. Сессия перезапустится при следующем сообщении.")
 
     return _error(f"Сервер '{name}' не найден")
 
@@ -212,7 +212,7 @@ async def mcp_disable(args: dict[str, Any]) -> dict[str, Any]:
         save_mcp_config()
         from src.users import get_session_manager
         get_session_manager().reset_all()
-        return _text(f"⏸️ MCP сервер **{name}** отключён\n\n🔄 Сессия перезапустится при следующем сообщении.")
+        return _text(f"MCP сервер {name} отключён. Сессия перезапустится при следующем сообщении.")
 
     return _error(f"Сервер '{name}' не найден")
 
@@ -237,7 +237,7 @@ async def mcp_remove(args: dict[str, Any]) -> dict[str, Any]:
         save_mcp_config()
         from src.users import get_session_manager
         get_session_manager().reset_all()
-        return _text(f"🗑️ MCP сервер **{name}** удалён\n\n🔄 Сессия перезапустится при следующем сообщении.")
+        return _text(f"MCP сервер {name} удалён. Сессия перезапустится при следующем сообщении.")
 
     return _error(f"Сервер '{name}' не найден")
 
@@ -270,4 +270,4 @@ def _text(text: str) -> dict[str, Any]:
 
 
 def _error(text: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": f"❌ {text}"}], "is_error": True}
+    return {"content": [{"type": "text", "text": f"Error: {text}"}], "is_error": True}

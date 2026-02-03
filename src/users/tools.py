@@ -75,7 +75,7 @@ async def send_to_user(args: dict[str, Any]) -> dict[str, Any]:
         try:
             await _telegram_sender(user.telegram_id, message)
             logger.info(f"Sent to {user.display_name}: {message[:50]}...")
-            return _text(f"✅ Отправлено {user.display_name}")
+            return _text(f"Отправлено {user.display_name}")
         except Exception as e:
             return _error(f"Ошибка отправки: {e}")
     else:
@@ -123,8 +123,8 @@ async def create_user_task(args: dict[str, Any]) -> dict[str, Any]:
     )
 
     # Уведомляем пользователя
-    deadline_str = f"\n⏰ Дедлайн: {deadline.strftime('%d.%m.%Y %H:%M')}" if deadline else ""
-    notification = f"📋 Новая задача:\n{description}{deadline_str}\n\nПодтверди получение."
+    deadline_str = f"\nДедлайн: {deadline.strftime('%d.%m.%Y %H:%M')}" if deadline else ""
+    notification = f"Новая задача:\n{description}{deadline_str}\n\nПодтверди получение."
 
     if _telegram_sender:
         try:
@@ -132,7 +132,7 @@ async def create_user_task(args: dict[str, Any]) -> dict[str, Any]:
         except Exception as e:
             logger.error(f"Failed to notify {user.telegram_id}: {e}")
 
-    return _text(f"✅ Задача [{task.id}] создана для {user.display_name}{deadline_str}")
+    return _text(f"Задача [{task.id}] создана для {user.display_name}{deadline_str}")
 
 
 @tool(
@@ -158,11 +158,10 @@ async def get_user_tasks(args: dict[str, Any]) -> dict[str, Any]:
     if not tasks:
         return _text(f"У {user.display_name} нет открытых задач")
 
-    lines = [f"📋 Задачи {user.display_name}:"]
+    lines = [f"Задачи {user.display_name}:"]
     for task in tasks:
         deadline = f" (до {task.deadline.strftime('%d.%m')})" if task.deadline else ""
-        status = task.format_status_emoji()
-        lines.append(f"{status} [{task.id}] {task.description[:40]}{deadline}")
+        lines.append(f"[{task.status}] [{task.id}] {task.description[:40]}{deadline}")
 
     return _text("\n".join(lines))
 
@@ -186,7 +185,7 @@ async def resolve_user(args: dict[str, Any]) -> dict[str, Any]:
         return _text(f"Пользователь '{query}' не найден")
 
     return _text(
-        f"👤 {user.display_name}\n"
+        f"{user.display_name}\n"
         f"ID: {user.telegram_id}\n"
         f"Username: @{user.username or 'нет'}\n"
         f"Телефон: {user.phone or 'нет'}\n"
@@ -207,7 +206,7 @@ async def list_users(args: dict[str, Any]) -> dict[str, Any]:
     if not users:
         return _text("Нет известных пользователей")
 
-    lines = ["👥 Пользователи:"]
+    lines = ["Пользователи:"]
     for user in users:
         username = f"@{user.username}" if user.username else ""
         lines.append(f"• {user.display_name} {username}")
@@ -228,7 +227,7 @@ async def get_overdue_tasks(args: dict[str, Any]) -> dict[str, Any]:
     if not tasks:
         return _text("Нет просроченных задач")
 
-    lines = ["⚠️ Просроченные задачи:"]
+    lines = ["Просроченные задачи:"]
     for task in tasks:
         user = await repo.get_user(task.assignee_id)
         user_name = user.display_name if user else str(task.assignee_id)
@@ -257,7 +256,7 @@ async def ban_user(args: dict[str, Any]) -> dict[str, Any]:
         return _error(f"Пользователь '{user_query}' не найден")
 
     if user.is_banned:
-        return _text(f"⚠️ {user.display_name} уже забанен")
+        return _text(f"{user.display_name} уже забанен")
 
     await repo.ban_user(user.telegram_id)
 
@@ -267,10 +266,10 @@ async def ban_user(args: dict[str, Any]) -> dict[str, Any]:
         username = f" (@{user.username})" if user.username else ""
         await _telegram_sender(
             settings.tg_user_id,
-            f"🚫 Пользователь {user.display_name}{username} забанен"
+            f"Пользователь {user.display_name}{username} забанен"
         )
 
-    return _text(f"🚫 {user.display_name} забанен")
+    return _text(f"{user.display_name} забанен")
 
 
 @tool(
@@ -292,7 +291,7 @@ async def unban_user(args: dict[str, Any]) -> dict[str, Any]:
         return _error(f"Пользователь '{user_query}' не найден")
 
     if not user.is_banned:
-        return _text(f"⚠️ {user.display_name} не забанен")
+        return _text(f"{user.display_name} не забанен")
 
     await repo.unban_user(user.telegram_id)
 
@@ -306,10 +305,10 @@ async def unban_user(args: dict[str, Any]) -> dict[str, Any]:
         username = f" (@{user.username})" if user.username else ""
         await _telegram_sender(
             settings.tg_user_id,
-            f"✅ Пользователь {user.display_name}{username} разбанен"
+            f"Пользователь {user.display_name}{username} разбанен"
         )
 
-    return _text(f"✅ {user.display_name} разбанен, сессия сброшена")
+    return _text(f"{user.display_name} разбанен, сессия сброшена")
 
 
 @tool(
@@ -325,7 +324,7 @@ async def list_banned(args: dict[str, Any]) -> dict[str, Any]:
     if not users:
         return _text("Нет забаненных пользователей")
 
-    lines = ["🚫 Забаненные:"]
+    lines = ["Забаненные:"]
     for user in users:
         username = f" @{user.username}" if user.username else ""
         lines.append(f"• {user.display_name}{username} (ID: {user.telegram_id})")
@@ -357,13 +356,13 @@ async def send_summary_to_owner(args: dict[str, Any]) -> dict[str, Any]:
     user = await repo.get_user(user_id)
     user_name = user.display_name if user else str(user_id)
 
-    message = f"📨 Сводка от {user_name}:\n\n{summary}"
+    message = f"Сводка от {user_name}:\n\n{summary}"
 
     if _telegram_sender:
         try:
             await _telegram_sender(settings.tg_user_id, message)
             logger.info(f"Summary sent to owner from {user_name}")
-            return _text("✅ Сводка отправлена владельцу")
+            return _text("Сводка отправлена владельцу")
         except Exception as e:
             return _error(f"Ошибка отправки: {e}")
     else:
@@ -384,12 +383,11 @@ async def get_my_tasks(args: dict[str, Any]) -> dict[str, Any]:
     if not tasks:
         return _text("У вас нет открытых задач")
 
-    lines = ["📋 Ваши задачи:"]
+    lines = ["Ваши задачи:"]
     for task in tasks:
         deadline = f" (до {task.deadline.strftime('%d.%m')})" if task.deadline else ""
-        status = task.format_status_emoji()
-        overdue = " ⚠️ ПРОСРОЧЕНО" if task.is_overdue else ""
-        lines.append(f"{status} [{task.id}] {task.description}{deadline}{overdue}")
+        overdue = " [ПРОСРОЧЕНО]" if task.is_overdue else ""
+        lines.append(f"[{task.status}] [{task.id}] {task.description}{deadline}{overdue}")
 
     return _text("\n".join(lines))
 
@@ -421,10 +419,10 @@ async def ban_current_user(args: dict[str, Any]) -> dict[str, Any]:
         username = f" (@{user.username})" if user.username else ""
         await _telegram_sender(
             settings.tg_user_id,
-            f"🚫 {user.display_name}{username} забанен.\nПричина: {reason}"
+            f"{user.display_name}{username} забанен.\nПричина: {reason}"
         )
 
-    return _text(f"🚫 Вы забанены: {reason}")
+    return _text(f"Вы забанены: {reason}")
 
 
 @tool(
@@ -462,8 +460,7 @@ async def update_task_status(args: dict[str, Any]) -> dict[str, Any]:
     user = await repo.get_user(user_id)
     user_name = user.display_name if user else str(user_id)
 
-    status_emoji = {"pending": "⏳", "accepted": "✅", "completed": "✔️"}
-    notification = f"{status_emoji.get(status, '📋')} {user_name} изменил статус задачи [{task_id}]: {status}"
+    notification = f"{user_name} изменил статус задачи [{task_id}]: {status}"
 
     if _telegram_sender:
         try:
@@ -471,7 +468,7 @@ async def update_task_status(args: dict[str, Any]) -> dict[str, Any]:
         except Exception as e:
             logger.error(f"Failed to notify owner: {e}")
 
-    return _text(f"✅ Статус [{task_id}] обновлён: {status}")
+    return _text(f"Статус [{task_id}] обновлён: {status}")
 
 
 # =============================================================================
@@ -511,4 +508,4 @@ def _text(text: str) -> dict[str, Any]:
 
 
 def _error(text: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": f"❌ {text}"}], "is_error": True}
+    return {"content": [{"type": "text", "text": f"Error: {text}"}], "is_error": True}

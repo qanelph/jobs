@@ -47,7 +47,7 @@ async def on_scheduled_task(task_id: str, prompt: str) -> None:
 
     await client.send_message(
         settings.tg_user_id,
-        f"⏰ Выполняю задачу:\n{prompt}",
+        f"Выполняю задачу:\n{prompt}",
     )
 
     # Используем сессию owner'а для scheduled tasks
@@ -60,7 +60,7 @@ async def on_scheduled_task(task_id: str, prompt: str) -> None:
 
     await client.send_message(
         settings.tg_user_id,
-        f"📋 Результат [{task_id}]:\n{content}",
+        f"Результат [{task_id}]:\n{content}",
     )
 
 

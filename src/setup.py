@@ -34,6 +34,18 @@ def is_claude_configured() -> bool:
     return any(f.exists() for f in CLAUDE_AUTH_FILES)
 
 
+def _clear_all_sessions() -> None:
+    """Очищает все Claude сессии (после перелогина credentials невалидны)."""
+    sessions_dir = settings.sessions_dir
+    if sessions_dir.exists():
+        import shutil
+        for f in sessions_dir.iterdir():
+            if f.is_file() and f.suffix == ".session":
+                f.unlink()
+                logger.debug(f"Removed session: {f.name}")
+        logger.info("All Claude sessions cleared")
+
+
 def _setup_claude_interactive() -> bool:
     """Запускает Claude для OAuth авторизации."""
     logger.info("Запуск Claude Code для авторизации...")
@@ -57,6 +69,8 @@ def _setup_claude_interactive() -> bool:
 
     if is_claude_configured():
         logger.info("Claude Code авторизован")
+        # Сбрасываем все сессии — старые session_id теперь невалидны
+        _clear_all_sessions()
         return True
 
     logger.warning("Credentials не найдены")

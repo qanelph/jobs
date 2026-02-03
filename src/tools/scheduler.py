@@ -14,6 +14,9 @@ from loguru import logger
 
 from src.config import settings
 
+# Timezone для парсинга времени
+_tz = settings.get_timezone()
+
 
 # =============================================================================
 # Storage
@@ -170,8 +173,9 @@ async def schedule_task(args: dict[str, Any]) -> dict[str, Any]:
     if scheduled_at is None:
         return _error(f"Неверный формат времени: {time_str}. Используй HH:MM или YYYY-MM-DD HH:MM")
 
-    # Если время в прошлом сегодня — переносим на завтра
-    if scheduled_at <= datetime.now():
+    # Если время в прошлом — переносим на завтра
+    now = datetime.now(_tz)
+    if scheduled_at <= now:
         scheduled_at += timedelta(days=1)
 
     # Парсим repeat
@@ -290,24 +294,35 @@ class SchedulerRunner:
 
 def _parse_time(time_str: str) -> datetime | None:
     """
-    Парсит время из строки.
+    Парсит время из строки в timezone пользователя.
 
     Форматы:
     - "HH:MM" — сегодня в указанное время
     - "YYYY-MM-DD HH:MM" — конкретная дата и время
+    - "YYYY-MM-DDTHH:MM:SS" — ISO формат
     """
     time_str = time_str.strip()
 
-    # Попробуем полный формат
+    # ISO формат
     try:
-        return datetime.strptime(time_str, "%Y-%m-%d %H:%M")
+        dt = datetime.fromisoformat(time_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_tz)
+        return dt
     except ValueError:
         pass
 
-    # Попробуем только время (сегодня)
+    # Полный формат YYYY-MM-DD HH:MM
+    try:
+        dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M")
+        return dt.replace(tzinfo=_tz)
+    except ValueError:
+        pass
+
+    # Только время HH:MM — сегодня
     try:
         time_part = datetime.strptime(time_str, "%H:%M")
-        now = datetime.now()
+        now = datetime.now(_tz)
         return now.replace(hour=time_part.hour, minute=time_part.minute, second=0, microsecond=0)
     except ValueError:
         pass

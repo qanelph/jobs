@@ -1,6 +1,26 @@
+from datetime import datetime, timezone as tz
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _detect_system_timezone() -> str:
+    """Определяет системный timezone."""
+    try:
+        # Пробуем получить из системы
+        local_tz = datetime.now().astimezone().tzinfo
+        if local_tz and hasattr(local_tz, 'key'):
+            return local_tz.key
+        # Fallback - смотрим offset и угадываем
+        offset = datetime.now().astimezone().utcoffset()
+        if offset:
+            hours = offset.total_seconds() / 3600
+            if hours == 3:
+                return "Europe/Moscow"
+    except Exception:
+        pass
+    return "Europe/Moscow"  # Default
 
 
 class Settings(BaseSettings):
@@ -23,6 +43,14 @@ class Settings(BaseSettings):
 
     # OpenAI (для Whisper транскрипции)
     openai_api_key: str | None = None
+
+    # Timezone (auto = определить из системы, или явно: Europe/Moscow, UTC, etc.)
+    timezone: str = "auto"
+
+    def get_timezone(self) -> ZoneInfo:
+        """Возвращает timezone для работы с временем."""
+        tz_name = self.timezone if self.timezone != "auto" else _detect_system_timezone()
+        return ZoneInfo(tz_name)
 
     # Heartbeat
     heartbeat_interval_minutes: int = 30  # 0 = отключен

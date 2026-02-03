@@ -2,6 +2,8 @@ services:
   jobs:
     build: .
     env_file: .env
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
     volumes:
       - ./data:/data              # Персистентные данные (сессия, БД)
       - ./data/.claude:/home/jobs/.claude  # Claude Code credentials

@@ -17,6 +17,7 @@ from src.users.tools import (
     OWNER_TOOL_NAMES,
     EXTERNAL_USER_TOOL_NAMES,
 )
+from src.telegram.tools import TELEGRAM_TOOLS, TELEGRAM_TOOL_NAMES
 
 
 # =============================================================================
@@ -29,6 +30,7 @@ ALL_TOOLS = [
     *MCP_MANAGER_TOOLS,
     *OWNER_TOOLS,
     *EXTERNAL_USER_TOOLS,
+    *TELEGRAM_TOOLS,
 ]
 
 
@@ -48,6 +50,8 @@ OWNER_ALLOWED_TOOLS = [
     *MCP_MANAGER_TOOL_NAMES,
     # User management
     *[f"mcp__jobs__{name}" for name in OWNER_TOOL_NAMES],
+    # Telegram API
+    *TELEGRAM_TOOL_NAMES,
 ]
 
 # External users — только свои задачи и сводки

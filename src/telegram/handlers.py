@@ -229,6 +229,17 @@ class TelegramHandlers:
             "unban_user": "✅ Разбаниваю",
             "list_banned": "🚫 Список забаненных",
             "ban_current_user": "🚫 Баню нарушителя",
+            # Telegram tools
+            "tg_send_message": "📤 Отправляю сообщение",
+            "tg_send_media": "📤 Отправляю медиа",
+            "tg_forward_message": "↪️ Пересылаю",
+            "tg_read_channel": "📢 Читаю канал",
+            "tg_read_comments": "💬 Читаю комменты",
+            "tg_read_chat": "💬 Читаю чат",
+            "tg_search_messages": "🔍 Ищу сообщения",
+            "tg_get_user_info": "👤 Смотрю профиль",
+            "tg_get_dialogs": "💬 Список чатов",
+            "tg_download_media": "📥 Скачиваю медиа",
         }
 
         return tools_display.get(clean_name, "⏳ Работаю...")

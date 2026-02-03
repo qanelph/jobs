@@ -12,6 +12,7 @@ from loguru import logger
 from src.config import settings, set_owner_info
 from src.telegram.client import create_client, load_session_string
 from src.telegram.handlers import TelegramHandlers
+from src.telegram.tools import set_telegram_client
 from src.setup import run_setup, is_telegram_configured, is_claude_configured
 from src.tools.scheduler import SchedulerRunner
 from src.users import get_session_manager
@@ -90,6 +91,7 @@ async def main() -> None:
     client = create_client(session_string)
     _telegram_client = client
     set_heartbeat_client(client)  # Для отправки напоминаний
+    set_telegram_client(client)  # Для Telegram tools
 
     try:
         await client.connect()

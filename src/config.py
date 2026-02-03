@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # OpenAI (для Whisper транскрипции)
     openai_api_key: str | None = None
 
+    # Heartbeat
+    heartbeat_interval_minutes: int = 30  # 0 = отключен
+
     # Paths
     data_dir: Path = Path("/data")
     workspace_dir: Path = Path("/workspace")

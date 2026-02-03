@@ -16,6 +16,7 @@ from src.setup import run_setup, is_telegram_configured, is_claude_configured
 from src.tools.scheduler import SchedulerRunner
 from src.session import get_session
 from src.memory import get_storage
+from src.heartbeat import HeartbeatRunner
 
 
 def setup_logging() -> None:
@@ -26,6 +27,14 @@ def setup_logging() -> None:
         format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
         level="DEBUG",
     )
+
+
+async def on_heartbeat_alert(message: str) -> None:
+    """Callback для heartbeat уведомлений."""
+    logger.info(f"Heartbeat alert: {message[:50]}...")
+
+    client = _telegram_client
+    await client.send_message(settings.tg_user_id, message)
 
 
 async def on_scheduled_task(task_id: str, prompt: str) -> None:
@@ -101,6 +110,17 @@ async def main() -> None:
     scheduler = SchedulerRunner(on_task_due=on_scheduled_task)
     await scheduler.start()
 
+    # Запускаем heartbeat (если включён)
+    heartbeat = None
+    if settings.heartbeat_interval_minutes > 0:
+        heartbeat = HeartbeatRunner(
+            on_alert=on_heartbeat_alert,
+            interval_minutes=settings.heartbeat_interval_minutes,
+        )
+        await heartbeat.start()
+    else:
+        logger.info("Heartbeat disabled (interval=0)")
+
     # Регистрируем handlers
     handlers = TelegramHandlers(client)
     handlers.register()
@@ -110,6 +130,8 @@ async def main() -> None:
     try:
         await client.run_until_disconnected()
     finally:
+        if heartbeat:
+            await heartbeat.stop()
         await scheduler.stop()
 
 

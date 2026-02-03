@@ -15,6 +15,7 @@ from src.telegram.handlers import TelegramHandlers
 from src.setup import run_setup, is_telegram_configured, is_claude_configured
 from src.tools.scheduler import SchedulerRunner
 from src.session import get_session
+from src.memory import get_storage
 
 
 def setup_logging() -> None:
@@ -62,6 +63,10 @@ async def main() -> None:
 
     setup_logging()
     logger.info("Starting Jobs - Personal AI Assistant")
+
+    # Инициализируем память (создаёт структуру файлов)
+    memory_storage = get_storage()
+    logger.info(f"Memory initialized at {settings.workspace_dir}")
 
     # Setup при первом запуске
     if not is_telegram_configured() or not is_claude_configured():

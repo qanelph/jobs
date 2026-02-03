@@ -19,6 +19,7 @@ from loguru import logger
 
 from src.config import settings
 from src.tools import create_tools_server, TOOL_NAMES
+from src.prompts import SYSTEM_PROMPT
 
 
 @dataclass
@@ -69,7 +70,7 @@ class ClaudeSession:
         path.write_text(session_id)
         logger.debug(f"Saved session: {session_id[:8]}...")
 
-    def _build_options(self) -> ClaudeAgentOptions:
+    def _build_options(self, system_prompt: str | None = None) -> ClaudeAgentOptions:
         """Создаёт опции для клиента."""
         env = os.environ.copy()
         env["HTTP_PROXY"] = settings.http_proxy
@@ -84,6 +85,7 @@ class ClaudeSession:
             env=env,
             mcp_servers={"jobs": self._tools_server},
             allowed_tools=TOOL_NAMES,
+            system_prompt=system_prompt or SYSTEM_PROMPT,
         )
 
         if self._session_id:

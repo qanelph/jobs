@@ -59,7 +59,6 @@ class UserSession:
         self._base_prompt_builder = base_prompt_builder  # Для dynamic prompt с context
         self._session_file = session_dir / f"{telegram_id}.session"
         self._session_id: str | None = self._load_session_id()
-        self._reset_pending: bool = False
         # Lazy import to avoid circular dependency
         from src.tools import create_tools_server
         self._tools_server = create_tools_server()
@@ -93,9 +92,6 @@ class UserSession:
 
     def _save_session_id(self, session_id: str) -> None:
         """Сохраняет session_id в файл."""
-        if self._reset_pending:
-            logger.debug(f"Skip save [{self.telegram_id}]: reset pending")
-            return
         self._session_file.parent.mkdir(parents=True, exist_ok=True)
         self._session_file.write_text(session_id)
         logger.debug(f"Saved session [{self.telegram_id}]: {session_id[:8]}...")
@@ -237,7 +233,6 @@ class UserSession:
     def reset(self) -> None:
         """Сбрасывает сессию."""
         self._session_id = None
-        self._reset_pending = True
         if self._session_file.exists():
             self._session_file.unlink()
         logger.info(f"Session reset [{self.telegram_id}]")

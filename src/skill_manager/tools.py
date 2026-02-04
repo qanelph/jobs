@@ -68,15 +68,11 @@ tools: {tools_str}
 
     logger.info(f"Created skill: {name}")
 
-    # Сбрасываем сессию чтобы SDK подхватил новый skill
-    from src.users import get_session_manager
-    get_session_manager().reset_all()
-
     return _text(
         f"Skill **{name}** создан.\n\n"
         f"Путь: `{skill_file}`\n\n"
         f"Triggers: {description[:100]}...\n\n"
-        "Сессия перезапустится при следующем сообщении."
+        "SDK подхватит при следующем сообщении."
     )
 
 
@@ -158,11 +154,7 @@ async def skill_delete(args: dict[str, Any]) -> dict[str, Any]:
     shutil.rmtree(skill_dir)
     logger.info(f"Deleted skill: {name}")
 
-    # Сбрасываем сессию
-    from src.users import get_session_manager
-    get_session_manager().reset_all()
-
-    return _text(f"Skill **{name}** удалён. Сессия перезапустится при следующем сообщении.")
+    return _text(f"Skill **{name}** удалён. SDK подхватит изменения при следующем сообщении.")
 
 
 @tool(
@@ -258,11 +250,7 @@ tools: {final_tools}
     skill_file.write_text(skill_content)
     logger.info(f"Updated skill: {name}")
 
-    # Сбрасываем сессию
-    from src.users import get_session_manager
-    get_session_manager().reset_all()
-
-    return _text(f"Skill **{name}** обновлён. Сессия перезапустится при следующем сообщении.")
+    return _text(f"Skill **{name}** обновлён. SDK подхватит изменения при следующем сообщении.")
 
 
 # Экспорт

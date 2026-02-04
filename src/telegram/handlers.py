@@ -49,12 +49,31 @@ class TelegramHandlers:
         """Отправляет сообщение пользователю (для user tools)."""
         await self._client.send_message(user_id, text)
 
-        # Буферизуем в сессию получателя, если отправитель — другая сессия.
-        # Определяем sender: это сессия, которая сейчас _is_querying=True.
+        # Cross-session: если получатель — другая сессия,
+        # запускаем автономный query чтобы ассистент мог отреагировать.
+        # Если сессия занята — буферизуем для следующего prompt.
         session_manager = get_session_manager()
         recipient = session_manager._sessions.get(user_id)
         if recipient and not recipient._is_querying:
+            asyncio.create_task(self._process_incoming(user_id, text))
+        elif recipient:
             recipient.receive_incoming(text)
+
+    async def _process_incoming(self, user_id: int, text: str) -> None:
+        """Автономная обработка входящего сообщения от другой сессии."""
+        try:
+            session_manager = get_session_manager()
+            session = session_manager.get_session(user_id)
+
+            now = datetime.now(tz=settings.get_timezone())
+            time_meta = now.strftime("%d.%m.%Y %H:%M")
+            prompt = f"[{time_meta}] [Входящее уведомление]\n\n{text}"
+
+            response = await session.query(prompt)
+            if response and response != "Нет ответа":
+                await self._client.send_message(user_id, self._prepare_response(text, response))
+        except Exception as e:
+            logger.error(f"Incoming processing error [{user_id}]: {e}")
 
     async def _on_message(self, event: events.NewMessage.Event) -> None:
         """Обрабатывает входящее сообщение (только private chats)."""

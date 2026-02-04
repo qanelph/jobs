@@ -60,7 +60,7 @@ async def tg_send_message(args: dict[str, Any]) -> dict[str, Any]:
             message,
             reply_to=reply_to if reply_to else None,
         )
-        return _text(f"Сообщение отправлено (ID: {result.id})")
+        return _text(f"Сообщение отправлено в {chat} (ID: {result.id}):\n{message}")
     except Exception as e:
         return _error(f"Ошибка отправки: {e}")
 
@@ -92,7 +92,7 @@ async def tg_send_media(args: dict[str, Any]) -> dict[str, Any]:
             path,
             caption=caption,
         )
-        return _text(f"Медиа отправлено (ID: {result.id})")
+        return _text(f"Медиа отправлено в {chat} (ID: {result.id})" + (f":\n{caption}" if caption else ""))
     except Exception as e:
         return _error(f"Ошибка отправки: {e}")
 
@@ -122,9 +122,75 @@ async def tg_forward_message(args: dict[str, Any]) -> dict[str, Any]:
             message_id,
             from_entity,
         )
-        return _text("Сообщение переслано")
+        return _text(f"Сообщение {message_id} переслано из {from_chat} в {to_chat}")
     except Exception as e:
         return _error(f"Ошибка пересылки: {e}")
+
+
+@tool(
+    "tg_send_comment",
+    "Post a comment on a channel post. Channel is @username or ID, post_id is the message ID.",
+    {"channel": str, "post_id": int, "message": str},
+)
+async def tg_send_comment(args: dict[str, Any]) -> dict[str, Any]:
+    """Отправляет комментарий к посту канала."""
+    channel = args.get("channel")
+    post_id = args.get("post_id")
+    message = args.get("message")
+
+    if not channel or not post_id or not message:
+        return _error("channel, post_id и message обязательны")
+
+    client = _get_client()
+
+    try:
+        entity = await client.get_entity(channel)
+        result = await client.send_message(
+            entity,
+            message,
+            comment_to=post_id,
+        )
+        return _text(f"Комментарий в {channel} к посту {post_id} (ID: {result.id}):\n{message}")
+    except Exception as e:
+        return _error(f"Ошибка отправки комментария: {e}")
+
+
+@tool(
+    "tg_get_participants",
+    "Get members of a group or channel. Returns ID, name, username, status.",
+    {"chat": str, "limit": int, "search": str},
+)
+async def tg_get_participants(args: dict[str, Any]) -> dict[str, Any]:
+    """Получает список участников группы/канала."""
+    chat = args.get("chat")
+    limit = args.get("limit", 50)
+    search = args.get("search", "")
+
+    if not chat:
+        return _error("chat обязателен")
+
+    limit = min(limit, 200)
+    client = _get_client()
+
+    try:
+        entity = await client.get_entity(chat)
+        participants = await client.get_participants(entity, limit=limit, search=search)
+
+        if not participants:
+            return _text("Нет участников" + (f" по запросу '{search}'" if search else ""))
+
+        lines = [f"Участники ({len(participants)}" + (f", поиск: '{search}'" if search else "") + "):\n"]
+
+        for user in participants:
+            name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "—"
+            username = f"@{user.username}" if user.username else "—"
+            status = _format_status(user.status)
+            bot_tag = " [бот]" if user.bot else ""
+            lines.append(f"[{user.id}] {name} ({username}) — {status}{bot_tag}")
+
+        return _text("\n".join(lines))
+    except Exception as e:
+        return _error(f"Ошибка получения участников: {e}")
 
 
 # =============================================================================
@@ -458,11 +524,13 @@ TELEGRAM_TOOLS = [
     tg_send_message,
     tg_send_media,
     tg_forward_message,
+    tg_send_comment,
     tg_read_channel,
     tg_read_comments,
     tg_read_chat,
     tg_search_messages,
     tg_get_user_info,
+    tg_get_participants,
     tg_get_dialogs,
     tg_download_media,
 ]
@@ -471,11 +539,13 @@ TELEGRAM_TOOL_NAMES = [
     "mcp__jobs__tg_send_message",
     "mcp__jobs__tg_send_media",
     "mcp__jobs__tg_forward_message",
+    "mcp__jobs__tg_send_comment",
     "mcp__jobs__tg_read_channel",
     "mcp__jobs__tg_read_comments",
     "mcp__jobs__tg_read_chat",
     "mcp__jobs__tg_search_messages",
     "mcp__jobs__tg_get_user_info",
+    "mcp__jobs__tg_get_participants",
     "mcp__jobs__tg_get_dialogs",
     "mcp__jobs__tg_download_media",
 ]

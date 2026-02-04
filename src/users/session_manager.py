@@ -6,17 +6,7 @@ SessionManager — управление сессиями Claude для разн�
 - External users — ограниченный доступ с external tools
 """
 
-"""
-SessionManager — управление сессиями Claude для разных пользователей.
-
-Каждый пользователь получает свою изолированную сессию:
-- Owner (tg_user_id) — полный доступ с owner tools
-- External users — ограниченный доступ с external tools
-
-Skills подхватываются автоматически через setting_sources=["project"].
-SDK ищет их в {cwd}/.claude/skills/
-"""
-
+import asyncio
 import os
 from pathlib import Path
 from typing import AsyncIterator
@@ -36,13 +26,17 @@ from src.mcp_manager.config import get_mcp_config
 from src.plugin_manager.config import get_plugin_config
 
 
+MAX_CONTEXT_MESSAGES = 10
+QUERY_TIMEOUT_SECONDS = 300  # 5 минут
+
+
 class UserSession:
     """
     Сессия Claude для конкретного пользователя.
 
-    Отличия от глобальной сессии:
-    - Хранит session_id в отдельном файле
-    - Может иметь разные system prompts и tools
+    Хранит локальный буфер последних сообщений (_context),
+    который подкладывается в каждый prompt — ассистент видит
+    что он отправлял через tool calls даже если session resume не сработал.
     """
 
     def __init__(
@@ -56,9 +50,10 @@ class UserSession:
         self.telegram_id = telegram_id
         self.is_owner = is_owner
         self._system_prompt = system_prompt
-        self._base_prompt_builder = base_prompt_builder  # Для dynamic prompt с context
+        self._base_prompt_builder = base_prompt_builder
         self._session_file = session_dir / f"{telegram_id}.session"
         self._session_id: str | None = self._load_session_id()
+        self._context: list[tuple[str, str]] = []  # (role, text) — буфер контекста
         # Lazy import to avoid circular dependency
         from src.tools import create_tools_server
         self._tools_server = create_tools_server()
@@ -73,22 +68,18 @@ class UserSession:
         return None
 
     async def _refresh_prompt_with_context(self) -> None:
-        """
-        Обновляет system_prompt с актуальным контекстом ConversationTask.
-
-        Вызывается перед каждым запросом для external users.
-        """
+        """Обновляет system_prompt с актуальным контекстом задач (для external users)."""
         if self.is_owner or not self._base_prompt_builder:
             return
 
         from src.users.repository import get_users_repository
-        from src.users.prompts import format_conversation_context
+        from src.users.prompts import format_task_context
 
         repo = get_users_repository()
-        tasks = await repo.get_active_conversation_tasks(self.telegram_id)
+        tasks = await repo.list_tasks(assignee_id=self.telegram_id, include_done=False)
 
-        conversation_context = format_conversation_context(tasks)
-        self._system_prompt = self._base_prompt_builder(conversation_context)
+        task_context = format_task_context(tasks)
+        self._system_prompt = self._base_prompt_builder(task_context)
 
     def _save_session_id(self, session_id: str) -> None:
         """Сохраняет session_id в файл."""
@@ -96,11 +87,30 @@ class UserSession:
         self._session_file.write_text(session_id)
         logger.debug(f"Saved session [{self.telegram_id}]: {session_id[:8]}...")
 
+    def add_context(self, role: str, text: str) -> None:
+        """Добавляет сообщение в буфер контекста."""
+        self._context.append((role, text[:1000]))
+        if len(self._context) > MAX_CONTEXT_MESSAGES:
+            self._context = self._context[-MAX_CONTEXT_MESSAGES:]
+
+    def _format_context(self) -> str:
+        """Форматирует буфер контекста для вставки в prompt."""
+        if not self._context:
+            return ""
+
+        lines = ["[Предыдущие сообщения в этом чате:]"]
+        for role, text in self._context:
+            prefix = "Ты" if role == "assistant" else "Пользователь"
+            lines.append(f"{prefix}: {text}")
+        lines.append("[Конец контекста]\n")
+        return "\n".join(lines)
+
     def _build_options(self, system_prompt_override: str | None = None) -> ClaudeAgentOptions:
         """Создаёт опции для клиента."""
         env = os.environ.copy()
-        env["HTTP_PROXY"] = settings.http_proxy
-        env["HTTPS_PROXY"] = settings.http_proxy
+        if settings.http_proxy:
+            env["HTTP_PROXY"] = settings.http_proxy
+            env["HTTPS_PROXY"] = settings.http_proxy
 
         if settings.anthropic_api_key:
             env["ANTHROPIC_API_KEY"] = settings.anthropic_api_key
@@ -114,26 +124,18 @@ class UserSession:
             external_servers = mcp_config.to_mcp_json()
             mcp_servers.update(external_servers)
 
-            # Browser MCP server (@playwright/mcp → existing Chromium via CDP)
-            # Wrapper fetches /json/version and rewrites WS URL hostname
             mcp_servers["browser"] = {
                 "command": "playwright-cdp-wrapper",
                 "args": [settings.browser_cdp_url],
                 "env": {"NO_PROXY": "browser,localhost,127.0.0.1"},
             }
 
-        # Разные allowed_tools для owner и external users
-        # Lazy import to avoid circular dependency
         from src.tools import OWNER_ALLOWED_TOOLS, EXTERNAL_ALLOWED_TOOLS
         allowed_tools = OWNER_ALLOWED_TOOLS if self.is_owner else EXTERNAL_ALLOWED_TOOLS
 
-        # Owner имеет полный доступ, external users — ограниченный
         permission_mode = "bypassPermissions" if self.is_owner else "default"
-
-        # Используем override если передан (для skill injection)
         prompt = system_prompt_override if system_prompt_override else self._system_prompt
 
-        # Плагины (только для owner)
         plugins = []
         if self.is_owner:
             plugin_config = get_plugin_config()
@@ -147,9 +149,7 @@ class UserSession:
             mcp_servers=mcp_servers,
             allowed_tools=allowed_tools,
             system_prompt=prompt,
-            # Включаем filesystem-based configuration (skills, slash commands, CLAUDE.md)
             setting_sources=["project"],
-            # Плагины из маркетплейса
             plugins=plugins,
         )
 
@@ -159,108 +159,124 @@ class UserSession:
         return options
 
     async def query(self, prompt: str) -> str:
-        """
-        Отправляет запрос и возвращает ответ.
-
-        Skills подхватываются автоматически через setting_sources=["project"].
-        SDK ищет их в {cwd}/.claude/skills/
-        """
+        """Отправляет запрос и возвращает ответ."""
         await self._refresh_prompt_with_context()
+
+        # Подкладываем контекст предыдущих сообщений
+        context = self._format_context()
+        full_prompt = f"{context}{prompt}" if context else prompt
 
         options = self._build_options()
         text_parts: list[str] = []
 
         try:
-            async with ClaudeSDKClient(options=options) as client:
-                await client.query(prompt)
+            async with asyncio.timeout(QUERY_TIMEOUT_SECONDS):
+                async with ClaudeSDKClient(options=options) as client:
+                    await client.query(full_prompt)
 
-                async for message in client.receive_response():
-                    if isinstance(message, AssistantMessage):
-                        for block in message.content:
-                            if isinstance(block, TextBlock):
-                                text_parts.append(block.text)
+                    async for message in client.receive_response():
+                        if isinstance(message, AssistantMessage):
+                            for block in message.content:
+                                if isinstance(block, TextBlock):
+                                    text_parts.append(block.text)
 
-                    elif isinstance(message, ResultMessage):
-                        if message.session_id:
-                            self._session_id = message.session_id
-                            self._save_session_id(message.session_id)
+                        elif isinstance(message, ResultMessage):
+                            if message.session_id:
+                                self._session_id = message.session_id
+                                self._save_session_id(message.session_id)
+
+        except TimeoutError:
+            logger.error(f"Claude timeout [{self.telegram_id}]: {QUERY_TIMEOUT_SECONDS}s")
+            return "Ошибка: таймаут запроса"
 
         except Exception as e:
-            logger.error(f"Claude error [{self.telegram_id}]: {e}")
+            logger.error(f"Claude error [{self.telegram_id}]: {type(e).__name__}: {e}")
             return f"Ошибка: {e}"
 
-        return "".join(text_parts) or "Нет ответа"
+        result = "".join(text_parts) or "Нет ответа"
+
+        # Сохраняем обмен в контекст
+        self.add_context("user", prompt)
+        self.add_context("assistant", result[:500])
+
+        return result
 
     async def query_stream(self, prompt: str) -> AsyncIterator[tuple[str | None, str | None, bool]]:
         """
         Стримит ответ.
-
-        Skills подхватываются автоматически через setting_sources=["project"].
-        SDK ищет их в {cwd}/.claude/skills/
 
         Yields:
             (text, tool_name, is_final)
         """
         await self._refresh_prompt_with_context()
 
+        # Подкладываем контекст предыдущих сообщений
+        context = self._format_context()
+        full_prompt = f"{context}{prompt}" if context else prompt
+
         options = self._build_options()
         text_buffer: list[str] = []
 
         try:
-            async with ClaudeSDKClient(options=options) as client:
-                await client.query(prompt)
+            async with asyncio.timeout(QUERY_TIMEOUT_SECONDS):
+                async with ClaudeSDKClient(options=options) as client:
+                    await client.query(full_prompt)
 
-                async for message in client.receive_response():
-                    if isinstance(message, AssistantMessage):
-                        for block in message.content:
-                            if isinstance(block, TextBlock):
-                                text_buffer.append(block.text)
-                                yield (block.text, None, False)
-                            elif isinstance(block, ToolUseBlock):
-                                tool_display = block.name
-                                if block.name == "Skill" and block.input.get("skill"):
-                                    tool_display = f"Skill:{block.input['skill']}"
-                                yield (None, tool_display, False)
+                    async for message in client.receive_response():
+                        if isinstance(message, AssistantMessage):
+                            for block in message.content:
+                                if isinstance(block, TextBlock):
+                                    text_buffer.append(block.text)
+                                    yield (block.text, None, False)
+                                elif isinstance(block, ToolUseBlock):
+                                    tool_display = block.name
+                                    if block.name == "Skill" and block.input.get("skill"):
+                                        tool_display = f"Skill:{block.input['skill']}"
+                                    yield (None, tool_display, False)
 
-                    elif isinstance(message, ResultMessage):
-                        if message.session_id:
-                            self._session_id = message.session_id
-                            self._save_session_id(message.session_id)
+                        elif isinstance(message, ResultMessage):
+                            if message.session_id:
+                                self._session_id = message.session_id
+                                self._save_session_id(message.session_id)
 
-                        yield ("".join(text_buffer), None, True)
+                            yield ("".join(text_buffer), None, True)
+
+        except TimeoutError:
+            logger.error(f"Claude timeout [{self.telegram_id}]: {QUERY_TIMEOUT_SECONDS}s")
+            yield ("Ошибка: таймаут запроса", None, True)
+            return
 
         except Exception as e:
-            logger.error(f"Claude error [{self.telegram_id}]: {e}")
+            logger.error(f"Claude error [{self.telegram_id}]: {type(e).__name__}: {e}")
             yield (f"Ошибка: {e}", None, True)
+            return
+
+        # Сохраняем обмен в контекст
+        response = "".join(text_buffer)
+        self.add_context("user", prompt)
+        self.add_context("assistant", response[:500])
 
     def reset(self) -> None:
         """Сбрасывает сессию."""
         self._session_id = None
+        self._context.clear()
         if self._session_file.exists():
             self._session_file.unlink()
         logger.info(f"Session reset [{self.telegram_id}]")
 
 
 class SessionManager:
-    """
-    Менеджер сессий — создаёт и хранит сессии по telegram_id.
-    """
+    """Менеджер сессий — создаёт и хранит сессии по telegram_id."""
 
     def __init__(self, session_dir: Path) -> None:
         self._session_dir = session_dir
         self._session_dir.mkdir(parents=True, exist_ok=True)
         self._sessions: dict[int, UserSession] = {}
 
-        # Lazy imports для промптов
         self._owner_prompt: str | None = None
         self._external_prompt_template: str | None = None
 
     def _get_owner_prompt(self) -> str:
-        """
-        Загружает system prompt для owner'а.
-
-        Skills подхватываются автоматически через setting_sources=["project"].
-        """
         if self._owner_prompt is None:
             from src.users.prompts import OWNER_SYSTEM_PROMPT
             self._owner_prompt = OWNER_SYSTEM_PROMPT
@@ -270,14 +286,12 @@ class SessionManager:
         self,
         telegram_id: int,
         user_display_name: str,
-        conversation_context: str = "",
+        task_context: str = "",
     ) -> str:
-        """Загружает system prompt для внешнего пользователя."""
         if self._external_prompt_template is None:
             from src.users.prompts import EXTERNAL_USER_PROMPT_TEMPLATE
             self._external_prompt_template = EXTERNAL_USER_PROMPT_TEMPLATE
 
-        # Формируем контактную информацию
         owner_link = get_owner_link()
         if owner_link:
             contact_info = f"Ссылка на владельца: {owner_link}"
@@ -289,17 +303,10 @@ class SessionManager:
             username=user_display_name,
             owner_name=get_owner_display_name(),
             owner_contact_info=contact_info,
-            conversation_context=conversation_context,
+            task_context=task_context,
         )
 
     def get_session(self, telegram_id: int, user_display_name: str | None = None) -> UserSession:
-        """
-        Получает или создаёт сессию для пользователя.
-
-        Args:
-            telegram_id: ID пользователя в Telegram
-            user_display_name: Имя пользователя для промпта (для external users)
-        """
         if telegram_id in self._sessions:
             return self._sessions[telegram_id]
 
@@ -311,7 +318,6 @@ class SessionManager:
         else:
             display_name = user_display_name or str(telegram_id)
             system_prompt = self._get_external_prompt(telegram_id, display_name)
-            # Builder для динамического обновления с ConversationTask context
             base_prompt_builder = lambda ctx, tid=telegram_id, dn=display_name: self._get_external_prompt(tid, dn, ctx)
 
         session = UserSession(
@@ -328,17 +334,14 @@ class SessionManager:
         return session
 
     def get_owner_session(self) -> UserSession:
-        """Shortcut для получения сессии owner'а."""
         return self.get_session(settings.tg_user_id)
 
-    def reset_session(self, telegram_id: int) -> None:
-        """Сбрасывает сессию пользователя."""
+    async def reset_session(self, telegram_id: int) -> None:
         if telegram_id in self._sessions:
             self._sessions[telegram_id].reset()
             del self._sessions[telegram_id]
 
-    def reset_all(self) -> None:
-        """Сбрасывает все сессии."""
+    async def reset_all(self) -> None:
         for session in self._sessions.values():
             session.reset()
         self._sessions.clear()
@@ -350,7 +353,6 @@ _session_manager: SessionManager | None = None
 
 
 def get_session_manager() -> SessionManager:
-    """Возвращает глобальный менеджер сессий."""
     global _session_manager
     if _session_manager is None:
         _session_manager = SessionManager(settings.sessions_dir)

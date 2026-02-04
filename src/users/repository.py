@@ -3,6 +3,7 @@ Repository — хранение данных о пользователях и з
 """
 
 import asyncio
+import sqlite3
 import uuid
 from datetime import datetime
 
@@ -10,7 +11,7 @@ import aiosqlite
 from loguru import logger
 
 from src.config import settings
-from .models import ExternalUser, UserTask, ConversationTask
+from .models import ExternalUser, Task
 
 
 class UsersRepository:
@@ -56,59 +57,148 @@ class UsersRepository:
         # Миграция: добавляем колонки если их нет
         try:
             await self._db.execute("ALTER TABLE external_users ADD COLUMN warnings_count INTEGER DEFAULT 0")
-        except Exception:
-            pass
+        except sqlite3.OperationalError:
+            pass  # column already exists
         try:
             await self._db.execute("ALTER TABLE external_users ADD COLUMN is_banned INTEGER DEFAULT 0")
-        except Exception:
-            pass
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
-        # Задачи пользователей
+        # Unified tasks table
         await self._db.execute("""
-            CREATE TABLE IF NOT EXISTS user_tasks (
+            CREATE TABLE IF NOT EXISTS tasks (
                 id TEXT PRIMARY KEY,
-                assignee_id INTEGER NOT NULL,
-                description TEXT NOT NULL,
-                deadline TEXT,
+                title TEXT NOT NULL,
                 status TEXT DEFAULT 'pending',
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 created_by INTEGER,
-                FOREIGN KEY (assignee_id) REFERENCES external_users(telegram_id)
+                assignee_id INTEGER,
+                deadline TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                kind TEXT DEFAULT 'task',
+                context TEXT DEFAULT '{}',
+                result TEXT,
+                schedule_at TEXT,
+                schedule_repeat INTEGER
             )
         """)
 
-        # Conversation Tasks (cross-session communication)
-        await self._db.execute("""
-            CREATE TABLE IF NOT EXISTS conversation_tasks (
-                id TEXT PRIMARY KEY,
-                owner_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                task_type TEXT DEFAULT 'custom',
-                title TEXT DEFAULT '',
-                context TEXT DEFAULT '{}',
-                status TEXT DEFAULT 'pending',
-                result TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+        # Миграция: schedule поля для существующих таблиц
+        try:
+            await self._db.execute("ALTER TABLE tasks ADD COLUMN schedule_at TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+        try:
+            await self._db.execute("ALTER TABLE tasks ADD COLUMN schedule_repeat INTEGER")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+        # Миграция из старых таблиц (user_tasks → tasks)
+        await self._migrate_old_tables()
 
         # Индексы
         await self._db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON user_tasks(assignee_id)"
+            "CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_id)"
         )
         await self._db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tasks_status ON user_tasks(status)"
+            "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)"
+        )
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_kind ON tasks(kind)"
+        )
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_schedule ON tasks(schedule_at)"
         )
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_users_username ON external_users(username)"
         )
-        await self._db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_conv_user ON conversation_tasks(user_id, status)"
-        )
 
         await self._db.commit()
         logger.debug("Users DB schema initialized")
+
+    async def _migrate_old_tables(self) -> None:
+        """Мигрирует данные из user_tasks и conversation_tasks в tasks."""
+        # Проверяем есть ли старая таблица user_tasks
+        cursor = await self._db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='user_tasks'"
+        )
+        if await cursor.fetchone():
+            # Мигрируем user_tasks → tasks (пропускаем уже существующие id)
+            await self._db.execute("""
+                INSERT OR IGNORE INTO tasks (id, title, status, created_by, assignee_id, deadline, created_at, updated_at, kind, context, result)
+                SELECT
+                    id,
+                    description,
+                    CASE status
+                        WHEN 'accepted' THEN 'in_progress'
+                        WHEN 'completed' THEN 'done'
+                        WHEN 'overdue' THEN 'pending'
+                        ELSE status
+                    END,
+                    created_by,
+                    assignee_id,
+                    deadline,
+                    created_at,
+                    created_at,
+                    'task',
+                    '{}',
+                    NULL
+                FROM user_tasks
+            """)
+            logger.debug("Migrated user_tasks → tasks")
+
+        # Проверяем есть ли старая таблица conversation_tasks
+        cursor = await self._db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_tasks'"
+        )
+        if await cursor.fetchone():
+            # Мигрируем conversation_tasks → tasks
+            await self._db.execute("""
+                INSERT OR IGNORE INTO tasks (id, title, status, created_by, assignee_id, deadline, created_at, updated_at, kind, context, result)
+                SELECT
+                    id,
+                    title,
+                    status,
+                    owner_id,
+                    user_id,
+                    NULL,
+                    created_at,
+                    updated_at,
+                    task_type,
+                    context,
+                    result
+                FROM conversation_tasks
+            """)
+            logger.debug("Migrated conversation_tasks → tasks")
+
+        # Проверяем есть ли старая таблица scheduled_tasks
+        cursor = await self._db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_tasks'"
+        )
+        if await cursor.fetchone():
+            import json as _json
+            # Читаем все pending задачи
+            cursor = await self._db.execute(
+                "SELECT id, prompt, scheduled_at, repeat_seconds, status FROM scheduled_tasks WHERE status = 'pending'"
+            )
+            rows = await cursor.fetchall()
+            now = datetime.now().isoformat()
+            for row in rows:
+                task_id = row["id"]
+                prompt = row["prompt"]
+                scheduled_at = row["scheduled_at"]
+                repeat_seconds = row["repeat_seconds"]
+                context_json = _json.dumps({"prompt": prompt}, ensure_ascii=False)
+
+                await self._db.execute(
+                    """
+                    INSERT OR IGNORE INTO tasks
+                        (id, title, kind, status, created_at, updated_at, context, schedule_at, schedule_repeat)
+                    VALUES (?, ?, 'scheduled', 'pending', ?, ?, ?, ?, ?)
+                    """,
+                    (task_id, prompt[:80], now, now, context_json, scheduled_at, repeat_seconds),
+                )
+            logger.debug(f"Migrated {len(rows)} scheduled_tasks → tasks")
 
     # =========================================================================
     # Users
@@ -415,130 +505,16 @@ class UsersRepository:
 
     async def create_task(
         self,
-        assignee_id: int,
-        description: str,
-        deadline: datetime | None = None,
+        title: str,
+        kind: str = "task",
+        assignee_id: int | None = None,
         created_by: int | None = None,
-    ) -> UserTask:
-        """Создаёт задачу для пользователя."""
-        db = await self._get_db()
-        task_id = str(uuid.uuid4())[:8]
-        now = datetime.now().isoformat()
-
-        await db.execute(
-            """
-            INSERT INTO user_tasks (id, assignee_id, description, deadline, created_at, created_by)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (task_id, assignee_id, description, deadline.isoformat() if deadline else None, now, created_by),
-        )
-        await db.commit()
-        logger.info(f"Task created: [{task_id}] for {assignee_id}")
-
-        return await self.get_task(task_id)
-
-    async def get_task(self, task_id: str) -> UserTask | None:
-        """Получает задачу по ID."""
-        db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT * FROM user_tasks WHERE id = ?",
-            (task_id,),
-        )
-        row = await cursor.fetchone()
-        if row:
-            return self._row_to_task(row)
-        return None
-
-    async def get_user_tasks(
-        self,
-        assignee_id: int,
-        include_completed: bool = False,
-    ) -> list[UserTask]:
-        """Получает задачи пользователя."""
-        db = await self._get_db()
-
-        if include_completed:
-            cursor = await db.execute(
-                "SELECT * FROM user_tasks WHERE assignee_id = ? ORDER BY created_at DESC",
-                (assignee_id,),
-            )
-        else:
-            cursor = await db.execute(
-                "SELECT * FROM user_tasks WHERE assignee_id = ? AND status NOT IN ('completed') ORDER BY deadline ASC NULLS LAST",
-                (assignee_id,),
-            )
-
-        return [self._row_to_task(row) for row in await cursor.fetchall()]
-
-    async def get_overdue_tasks(self) -> list[UserTask]:
-        """Получает все просроченные задачи."""
-        db = await self._get_db()
-        now = datetime.now().isoformat()
-        cursor = await db.execute(
-            """
-            SELECT * FROM user_tasks
-            WHERE status NOT IN ('completed') AND deadline IS NOT NULL AND deadline < ?
-            ORDER BY deadline ASC
-            """,
-            (now,),
-        )
-        return [self._row_to_task(row) for row in await cursor.fetchall()]
-
-    async def get_upcoming_tasks(self, hours: int = 24) -> list[UserTask]:
-        """Получает задачи с дедлайном в ближайшие N часов."""
-        db = await self._get_db()
-        now = datetime.now()
-        future = datetime.now().replace(hour=now.hour + hours) if hours < 24 else datetime.now()
-
-        # Простой вариант: дедлайн сегодня
-        cursor = await db.execute(
-            """
-            SELECT * FROM user_tasks
-            WHERE status NOT IN ('completed') AND deadline IS NOT NULL
-            ORDER BY deadline ASC
-            """,
-        )
-        tasks = [self._row_to_task(row) for row in await cursor.fetchall()]
-
-        # Фильтруем в Python (проще чем datetime арифметика в SQLite)
-        from datetime import timedelta
-        cutoff = now + timedelta(hours=hours)
-        return [t for t in tasks if t.deadline and t.deadline <= cutoff]
-
-    async def update_task_status(self, task_id: str, status: str) -> bool:
-        """Обновляет статус задачи."""
-        db = await self._get_db()
-        cursor = await db.execute(
-            "UPDATE user_tasks SET status = ? WHERE id = ?",
-            (status, task_id),
-        )
-        await db.commit()
-        return cursor.rowcount > 0
-
-    def _row_to_task(self, row: aiosqlite.Row) -> UserTask:
-        return UserTask(
-            id=row["id"],
-            assignee_id=row["assignee_id"],
-            description=row["description"],
-            deadline=datetime.fromisoformat(row["deadline"]) if row["deadline"] else None,
-            status=row["status"],
-            created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.now(),
-            created_by=row["created_by"],
-        )
-
-    # =========================================================================
-    # Conversation Tasks (cross-session)
-    # =========================================================================
-
-    async def create_conversation_task(
-        self,
-        owner_id: int,
-        user_id: int,
-        task_type: str = "custom",
-        title: str = "",
+        deadline: datetime | None = None,
         context: dict | None = None,
-    ) -> ConversationTask:
-        """Создаёт задачу согласования между owner и user."""
+        schedule_at: datetime | None = None,
+        schedule_repeat: int | None = None,
+    ) -> Task:
+        """Создаёт задачу."""
         import json
         db = await self._get_db()
         task_id = str(uuid.uuid4())[:8]
@@ -547,54 +523,113 @@ class UsersRepository:
 
         await db.execute(
             """
-            INSERT INTO conversation_tasks (id, owner_id, user_id, task_type, title, context, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks (id, title, kind, assignee_id, created_by, deadline,
+                               created_at, updated_at, context, schedule_at, schedule_repeat)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (task_id, owner_id, user_id, task_type, title, context_json, now, now),
+            (task_id, title, kind, assignee_id, created_by,
+             deadline.isoformat() if deadline else None, now, now, context_json,
+             schedule_at.isoformat() if schedule_at else None, schedule_repeat),
         )
         await db.commit()
-        logger.info(f"ConversationTask created: [{task_id}] owner={owner_id} user={user_id} type={task_type}")
+        logger.info(f"Task created: [{task_id}] kind={kind} assignee={assignee_id}")
 
-        return await self.get_conversation_task(task_id)
+        return await self.get_task(task_id)
 
-    async def get_conversation_task(self, task_id: str) -> ConversationTask | None:
-        """Получает задачу согласования по ID."""
+    async def get_task(self, task_id: str) -> Task | None:
+        """Получает задачу по ID."""
         db = await self._get_db()
         cursor = await db.execute(
-            "SELECT * FROM conversation_tasks WHERE id = ?",
+            "SELECT * FROM tasks WHERE id = ?",
             (task_id,),
         )
         row = await cursor.fetchone()
         if row:
-            return ConversationTask.from_row(dict(row))
+            return Task.from_row(dict(row))
         return None
 
-    async def get_active_conversation_tasks(self, user_id: int) -> list[ConversationTask]:
-        """Получает активные задачи согласования для user'а."""
+    async def list_tasks(
+        self,
+        assignee_id: int | None = None,
+        status: str | None = None,
+        kind: str | None = None,
+        overdue_only: bool = False,
+        include_done: bool = False,
+    ) -> list[Task]:
+        """Получает задачи с фильтрами."""
         db = await self._get_db()
+
+        conditions: list[str] = []
+        params: list = []
+
+        if assignee_id is not None:
+            conditions.append("assignee_id = ?")
+            params.append(assignee_id)
+
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+        elif not include_done:
+            conditions.append("status NOT IN ('done', 'cancelled')")
+
+        if kind:
+            conditions.append("kind = ?")
+            params.append(kind)
+
+        if overdue_only:
+            now = datetime.now().isoformat()
+            conditions.append("deadline IS NOT NULL AND deadline < ?")
+            params.append(now)
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+        cursor = await db.execute(
+            f"SELECT * FROM tasks {where} ORDER BY deadline ASC NULLS LAST, created_at DESC",
+            params,
+        )
+        return [Task.from_row(dict(row)) for row in await cursor.fetchall()]
+
+    async def get_scheduled_due(self) -> list[Task]:
+        """Возвращает scheduled-задачи, у которых schedule_at <= now."""
+        db = await self._get_db()
+        now = datetime.now().isoformat()
         cursor = await db.execute(
             """
-            SELECT * FROM conversation_tasks
-            WHERE user_id = ? AND status IN ('pending', 'in_progress')
-            ORDER BY created_at DESC
+            SELECT * FROM tasks
+            WHERE kind = 'scheduled'
+              AND schedule_at IS NOT NULL
+              AND schedule_at <= ?
+              AND status NOT IN ('done', 'cancelled')
+            ORDER BY schedule_at ASC
             """,
-            (user_id,),
+            (now,),
         )
-        return [ConversationTask.from_row(dict(row)) for row in await cursor.fetchall()]
+        return [Task.from_row(dict(row)) for row in await cursor.fetchall()]
 
-    async def update_conversation_task(
+    async def update_schedule(self, task_id: str, schedule_at: datetime | None) -> bool:
+        """Обновляет schedule_at для задачи."""
+        db = await self._get_db()
+        now = datetime.now().isoformat()
+        cursor = await db.execute(
+            "UPDATE tasks SET schedule_at = ?, updated_at = ? WHERE id = ?",
+            (schedule_at.isoformat() if schedule_at else None, now, task_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+    async def update_task(
         self,
         task_id: str,
         status: str | None = None,
         result: dict | None = None,
     ) -> bool:
-        """Обновляет задачу согласования."""
+        """Обновляет задачу."""
         import json
         db = await self._get_db()
         now = datetime.now().isoformat()
 
         updates = ["updated_at = ?"]
-        params = [now]
+        params: list = [now]
 
         if status:
             updates.append("status = ?")
@@ -607,7 +642,7 @@ class UsersRepository:
         params.append(task_id)
 
         cursor = await db.execute(
-            f"UPDATE conversation_tasks SET {', '.join(updates)} WHERE id = ?",
+            f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?",
             params,
         )
         await db.commit()

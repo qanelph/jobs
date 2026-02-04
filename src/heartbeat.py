@@ -8,14 +8,20 @@ Heartbeat — периодическая проверка с проактивн�
 - Если нет → молчит (HEARTBEAT_OK)
 """
 
+from __future__ import annotations
+
 import asyncio
 from datetime import datetime
-from typing import Callable, Awaitable, Any
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
 from src.config import settings
 from src.users.prompts import HEARTBEAT_PROMPT
+
+if TYPE_CHECKING:
+    from telethon import TelegramClient
+    from src.triggers.executor import TriggerExecutor
 
 
 # Маркер что всё ок, не нужно писать пользователю
@@ -24,15 +30,6 @@ HEARTBEAT_OK_MARKER = "HEARTBEAT_OK"
 # Интервал по умолчанию (минуты)
 DEFAULT_INTERVAL_MINUTES = 30
 
-# Глобальная ссылка на Telegram клиент
-_telegram_client: Any = None
-
-
-def set_heartbeat_client(client: Any) -> None:
-    """Устанавливает Telegram клиент для отправки напоминаний."""
-    global _telegram_client
-    _telegram_client = client
-
 
 class HeartbeatRunner:
     """
@@ -40,21 +37,18 @@ class HeartbeatRunner:
 
     Каждые interval минут:
     1. Проверяет просроченные задачи пользователей
-    2. Отправляет агенту HEARTBEAT_PROMPT
-    3. Если ответ НЕ содержит HEARTBEAT_OK — отправляет пользователю
+    2. Отправляет TriggerEvent через executor
+    3. Если ответ содержит HEARTBEAT_OK — тишина
     """
 
     def __init__(
         self,
-        on_alert: Callable[[str], Awaitable[None]],
+        executor: TriggerExecutor,
+        client: TelegramClient,
         interval_minutes: int = DEFAULT_INTERVAL_MINUTES,
     ) -> None:
-        """
-        Args:
-            on_alert: Callback для отправки уведомления пользователю
-            interval_minutes: Интервал между проверками
-        """
-        self._on_alert = on_alert
+        self._executor = executor
+        self._client = client
         self._interval = interval_minutes * 60  # в секунды
         self._running = False
         self._task: asyncio.Task | None = None
@@ -94,6 +88,8 @@ class HeartbeatRunner:
 
     async def _check(self) -> None:
         """Выполняет проверку."""
+        from src.triggers.models import TriggerEvent
+
         logger.debug("Heartbeat check started")
 
         # Проверяем просроченные задачи пользователей
@@ -102,37 +98,22 @@ class HeartbeatRunner:
         # Формируем промпт с информацией о задачах
         prompt = await self._build_heartbeat_prompt()
 
-        # Используем сессию owner'а
-        from src.users import get_session_manager
-        session_manager = get_session_manager()
-        session = session_manager.get_owner_session()
-
-        content = await session.query(prompt)
-        content = content.strip()
-
-        # Проверяем маркер
-        if HEARTBEAT_OK_MARKER in content:
-            logger.debug("Heartbeat: all OK, no alert needed")
-            return
-
-        # Есть что сказать — отправляем пользователю
-        logger.info(f"Heartbeat alert: {content[:100]}...")
-
-        # Убираем маркер если он частично присутствует
-        alert_text = content.replace(HEARTBEAT_OK_MARKER, "").strip()
-
-        if alert_text:
-            await self._on_alert(f"💡 {alert_text}")
+        event = TriggerEvent(
+            source="heartbeat",
+            prompt=prompt,
+            silent_marker=HEARTBEAT_OK_MARKER,
+            result_prefix="💡",
+        )
+        await self._executor.execute(event)
 
     async def _check_user_tasks(self) -> None:
         """Проверяет просроченные задачи и напоминает пользователям."""
-        from src.users import get_users_repository, get_session_manager
-        from src.config import settings
+        from src.users import get_users_repository
 
         repo = get_users_repository()
 
         # Получаем просроченные задачи
-        overdue = await repo.get_overdue_tasks()
+        overdue = await repo.list_tasks(overdue_only=True)
         if not overdue:
             return
 
@@ -141,16 +122,13 @@ class HeartbeatRunner:
         # Группируем по assignee
         by_user: dict[int, list] = {}
         for task in overdue:
+            if task.assignee_id is None:
+                continue
             if task.assignee_id not in by_user:
                 by_user[task.assignee_id] = []
             by_user[task.assignee_id].append(task)
 
         # Отправляем напоминания пользователям
-        client = _telegram_client
-        if not client:
-            logger.warning("Telegram client not available for reminders")
-            return
-
         for user_id, tasks in by_user.items():
             # Не напоминаем owner'у через этот механизм
             if user_id == settings.tg_user_id:
@@ -163,14 +141,14 @@ class HeartbeatRunner:
             task_lines = []
             for task in tasks[:3]:  # Максимум 3 задачи в напоминании
                 days = (datetime.now() - task.deadline).days if task.deadline else 0
-                task_lines.append(f"• {task.description[:50]} (просрочено {days} дн.)")
+                task_lines.append(f"• {task.title[:50]} (просрочено {days} дн.)")
 
             reminder = "Напоминание о просроченных задачах:\n\n" + "\n".join(task_lines)
             if len(tasks) > 3:
                 reminder += f"\n\n...и ещё {len(tasks) - 3} задач(и)"
 
             try:
-                await client.send_message(user_id, reminder)
+                await self._client.send_message(user_id, reminder)
                 logger.info(f"Sent reminder to {user_name}: {len(tasks)} overdue tasks")
             except Exception as e:
                 logger.error(f"Failed to send reminder to {user_name}: {e}")
@@ -181,28 +159,46 @@ class HeartbeatRunner:
 
         base_prompt = HEARTBEAT_PROMPT.format(interval=self._interval // 60)
 
-        # Добавляем информацию о просроченных задачах
         repo = get_users_repository()
-        overdue = await repo.get_overdue_tasks()
-        upcoming = await repo.get_upcoming_tasks(hours=24)
+
+        # Просроченные задачи
+        overdue = await repo.list_tasks(overdue_only=True)
+        # Все активные задачи с дедлайном (для upcoming)
+        active = await repo.list_tasks(include_done=False)
+
+        from datetime import timedelta
+        now = datetime.now()
+        cutoff = now + timedelta(hours=24)
+        upcoming = [t for t in active if t.deadline and not t.is_overdue and t.deadline <= cutoff]
 
         task_info = []
 
         if overdue:
             task_info.append(f"\n## Просроченные задачи ({len(overdue)})")
-            for task in overdue[:5]:  # Ограничиваем
-                user = await repo.get_user(task.assignee_id)
-                user_name = user.display_name if user else str(task.assignee_id)
-                days = (asyncio.get_event_loop().time() - task.deadline.timestamp()) / 86400 if task.deadline else 0
-                task_info.append(f"- [{task.id}] {user_name}: {task.description[:40]} (просрочено)")
+            for task in overdue[:5]:
+                user = await repo.get_user(task.assignee_id) if task.assignee_id else None
+                user_name = user.display_name if user else str(task.assignee_id or "система")
+                task_info.append(f"- [{task.id}] {user_name}: {task.title[:40]} (просрочено)")
 
         if upcoming:
             task_info.append(f"\n## Задачи на сегодня ({len(upcoming)})")
             for task in upcoming[:5]:
-                user = await repo.get_user(task.assignee_id)
-                user_name = user.display_name if user else str(task.assignee_id)
+                user = await repo.get_user(task.assignee_id) if task.assignee_id else None
+                user_name = user.display_name if user else str(task.assignee_id or "система")
                 time_str = task.deadline.strftime("%H:%M") if task.deadline else "—"
-                task_info.append(f"- [{task.id}] {user_name}: {task.description[:40]} (дедлайн {time_str})")
+                task_info.append(f"- [{task.id}] {user_name}: {task.title[:40]} (дедлайн {time_str})")
+
+        # Запланированные задачи (ближайшие schedule_at)
+        scheduled = await repo.list_tasks(kind="scheduled")
+        scheduled_active = [t for t in scheduled if t.schedule_at is not None]
+        scheduled_active.sort(key=lambda t: t.schedule_at)
+
+        if scheduled_active:
+            task_info.append(f"\n## Запланированные задачи ({len(scheduled_active)})")
+            for task in scheduled_active[:5]:
+                time_str = task.schedule_at.strftime("%d.%m %H:%M")
+                repeat = f" (повтор: {task.schedule_repeat}с)" if task.schedule_repeat else ""
+                task_info.append(f"- [{task.id}] {time_str}{repeat}: {task.title[:40]}")
 
         if task_info:
             return base_prompt + "\n" + "\n".join(task_info)

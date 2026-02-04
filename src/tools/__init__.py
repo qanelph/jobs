@@ -19,7 +19,9 @@ from src.users.tools import (
     OWNER_TOOL_NAMES,
     EXTERNAL_USER_TOOL_NAMES,
 )
+
 from src.telegram.tools import TELEGRAM_TOOLS, TELEGRAM_TOOL_NAMES
+from src.triggers.tools import TRIGGER_TOOLS, TRIGGER_TOOL_NAMES
 
 
 # =============================================================================
@@ -28,6 +30,7 @@ from src.telegram.tools import TELEGRAM_TOOLS, TELEGRAM_TOOL_NAMES
 
 ALL_TOOLS = [
     *SCHEDULER_TOOLS,
+    *TRIGGER_TOOLS,
     *MEMORY_TOOLS,
     *MCP_MANAGER_TOOLS,
     *PLUGIN_MANAGER_TOOLS,
@@ -72,8 +75,9 @@ BROWSER_TOOL_NAMES = [
 OWNER_ALLOWED_TOOLS = [
     # Scheduler
     "mcp__jobs__schedule_task",
-    "mcp__jobs__list_scheduled_tasks",
-    "mcp__jobs__cancel_scheduled_task",
+    "mcp__jobs__cancel_task",
+    # Triggers
+    *TRIGGER_TOOL_NAMES,
     # Memory
     *MEMORY_TOOL_NAMES,
     # MCP Manager

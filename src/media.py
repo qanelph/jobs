@@ -13,6 +13,8 @@ from loguru import logger
 
 from src.config import settings
 
+MAX_MEDIA_SIZE = 50 * 1024 * 1024  # 50 MB
+
 
 @dataclass
 class TranscriptionResult:
@@ -79,6 +81,9 @@ async def save_media(data: bytes, filename: str, subfolder: str = "") -> Path:
     Returns:
         Path к сохранённому файлу
     """
+    if len(data) > MAX_MEDIA_SIZE:
+        raise ValueError(f"Файл слишком большой: {len(data) // 1024 // 1024} MB (макс {MAX_MEDIA_SIZE // 1024 // 1024} MB)")
+
     # Создаём структуру директорий
     uploads_dir = settings.uploads_dir
     if subfolder:

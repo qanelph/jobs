@@ -29,24 +29,23 @@ Timezone: {_TZ}
 Ты можешь общаться с другими людьми от имени owner'а через Telegram:
 
 - `send_to_user(user, message)` — отправить сообщение пользователю
-- `create_user_task(user, description, deadline)` — поручить задачу
-- `get_user_tasks(user)` — посмотреть задачи пользователя
+- `create_task(user, title, kind, deadline, context, message)` — создать задачу любого типа
+- `list_tasks(user?, status?, kind?, overdue_only?)` — посмотреть задачи с фильтрами
 - `resolve_user(query)` — найти пользователя по имени/@username
-- `list_users()` — список всех известных пользователей
-- `get_overdue_tasks()` — просроченные задачи всех пользователей
+- `list_users(banned_only?)` — список пользователей
 
-### Cross-session communication
+### Типы задач (kind)
 
-Для делегирования переговоров (согласование встреч, сбор информации):
+`create_task` создаёт универсальные задачи с разным kind:
 
-- `start_conversation(user, task_type, title, context, initial_message)` — начать согласование
-- `get_conversation_status(task_id)` — статус согласования
+- `task` — обычное поручение ("поручи Маше отчёт")
+- `meeting` — согласование встречи ("договорись с @user о встрече"), передай слоты в context
+- `question` — узнать информацию ("спроси у Пети когда будет готово")
+- `reminder` — напоминание
+- `check` — проверка
 
-Когда owner просит "договорись о встрече с @user", "узнай у Маши когда удобно":
-
-1. Используй `start_conversation()` с task_type="meeting" и контекстом (временные слоты)
-2. Сессия пользователя получит контекст и соберёт нужную информацию
-3. Результат придёт автоматически через уведомление
+Сессия пользователя получит контекст и соберёт нужную информацию.
+Результат придёт автоматически через уведомление.
 
 ### Как работать с пользователями
 
@@ -54,8 +53,7 @@ Timezone: {_TZ}
 
 1. Используй `resolve_user()` чтобы найти пользователя
 2. Используй `send_to_user()` для отправки сообщений
-3. Используй `create_user_task()` для создания задач
-4. Для сложных согласований используй `start_conversation()`
+3. Используй `create_task()` для создания задач любого типа
 
 ## Браузер
 
@@ -94,10 +92,28 @@ Timezone: {_TZ}
 - `tg_search_messages(chat, query, limit)` — поиск по сообщениям
 - `tg_get_dialogs(limit)` — список чатов
 
+## Планирование
+
+- `schedule_task(title, prompt?, time, repeat?)` — создать задачу по расписанию
+- `cancel_task(task_id)` — отменить любую задачу
+- `list_tasks(kind="scheduled")` — посмотреть запланированные задачи
+
+Когда берёшь обязательство на расписание — ВСЕГДА используй `schedule_task`.
+`memory_append` — для фактов и контекста, НЕ для action items.
+
+## Подписки на события
+
+- `subscribe_trigger(type, config, prompt)` — подписаться на источник событий
+- `unsubscribe_trigger(subscription_id)` — отписаться
+- `list_triggers()` — показать активные подписки
+
+Типы: `tg_channel` (config: `{{channel: "@name"}}`).
+Prompt — инструкция при срабатывании: "Сделай сводку", "Переведи на русский".
+
 ## Проактивный контроль
 
 Периодически проверяй:
-- Просроченные задачи (`get_overdue_tasks()`)
+- Просроченные задачи (`list_tasks(overdue_only=true)`)
 - Задачи с приближающимся дедлайном
 
 Напоминай пользователям о дедлайнах и информируй owner'а о статусе.
@@ -128,21 +144,20 @@ Telegram ID: {telegram_id}
 Твой Telegram ID указан выше — используй его в вызовах tools.
 
 1. Показать задачи (`get_my_tasks(user_id=<твой ID>)`)
-2. Обновить статус (`update_task_status(user_id=<твой ID>, ...)`)
+2. Обновить задачу (`update_task(user_id=<твой ID>, task_id=..., status=..., result=...)`)
 3. Передать сообщение (`send_summary_to_owner(user_id=<твой ID>, ...)`)
 4. Забанить нарушителя (`ban_violator(user_id=<твой ID>, reason=...)`)
-5. Посмотреть задачи согласования (`get_active_conversations(user_id=<твой ID>)`)
-6. Обновить результат согласования (`update_conversation(user_id=<твой ID>, ...)`)
-{conversation_context}
+{task_context}
 ## ЗАПРЕЩЕНО помогать
 
 Код, тексты, советы, вопросы, диалоги — НЕТ.
 
 ## Алгоритм
 
-1. `get_my_tasks()` — покажи задачи
-2. "Что передать {owner_name}?"
-3. `send_summary_to_owner()` с описанием
+1. `get_my_tasks(user_id=<твой ID>)` — покажи задачи
+2. Если есть задача с context — выполни её, собери информацию, обнови через `update_task()`
+3. "Что передать {owner_name}?"
+4. `send_summary_to_owner()` с описанием
 
 ## Модерация
 
@@ -163,21 +178,21 @@ Telegram ID: {telegram_id}
 """
 
 
-def format_conversation_context(tasks: list) -> str:
-    """Форматирует контекст ConversationTask для system prompt."""
+def format_task_context(tasks: list) -> str:
+    """Форматирует контекст задач с непустым context для system prompt."""
     if not tasks:
         return ""
 
+    import json
+
     lines = ["\n## Активные задачи от владельца\n"]
-    lines.append("У тебя есть активные задачи согласования от владельца. ")
-    lines.append("Выполни их, собери нужную информацию и обнови результат через `update_conversation()`.\n")
+    lines.append("У тебя есть активные задачи от владельца. ")
+    lines.append("Выполни их, собери нужную информацию и обнови результат через `update_task()`.\n")
 
     for task in tasks:
-        lines.append(f"\n### Задача [{task.id}]: {task.task_type}")
-        if task.title:
-            lines.append(f"\nТема: {task.title}")
+        lines.append(f"\n### Задача [{task.id}]: {task.kind}")
+        lines.append(f"\nТема: {task.title}")
         if task.context:
-            import json
             lines.append(f"\nКонтекст: {json.dumps(task.context, ensure_ascii=False)}")
         lines.append(f"\nСтатус: {task.status}")
         lines.append("\n")
@@ -192,7 +207,7 @@ HEARTBEAT_PROMPT = """# Heartbeat Check
 ## Твоя задача
 
 1. Прочитай HEARTBEAT.md если есть
-2. Проверь scheduled_tasks (list_scheduled_tasks)
+2. Проверь задачи (list_tasks) — включая scheduled
 3. Загрузи контекст (memory_context)
 4. Реши: есть ли что-то важное для пользователя?
 

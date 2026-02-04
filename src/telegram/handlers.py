@@ -7,6 +7,7 @@ Telegram Handlers — обработка входящих сообщений.
 """
 
 import asyncio
+from datetime import datetime
 from typing import Any
 
 from telethon import TelegramClient, events
@@ -18,7 +19,7 @@ from loguru import logger
 from src.config import settings, set_owner_info
 from src.users import get_session_manager, get_users_repository
 from src.users.tools import set_telegram_sender
-from src.media import transcribe_audio, save_media
+from src.media import transcribe_audio, save_media, MAX_MEDIA_SIZE
 
 MAX_TG_LENGTH = 4000
 TYPING_REFRESH_INTERVAL = 3.0
@@ -49,7 +50,11 @@ class TelegramHandlers:
         await self._client.send_message(user_id, text)
 
     async def _on_message(self, event: events.NewMessage.Event) -> None:
-        """Обрабатывает входящее сообщение."""
+        """Обрабатывает входящее сообщение (только private chats)."""
+        # Пропускаем каналы и группы — ими занимаются trigger subscriptions
+        if event.is_channel or event.is_group:
+            return
+
         message = event.message
         sender = await event.get_sender()
 
@@ -58,6 +63,13 @@ class TelegramHandlers:
 
         user_id = sender.id
         is_owner = user_id == settings.tg_user_id
+
+        # /clear — сброс сессии
+        if message.text and message.text.strip().lower() == "/clear":
+            session_manager = get_session_manager()
+            await session_manager.reset_session(user_id)
+            await event.reply("Сессия сброшена.")
+            return
 
         # Обработка разных типов сообщений
         prompt, media_context = await self._extract_content(message)
@@ -90,9 +102,11 @@ class TelegramHandlers:
                 logger.info(f"[{user_id}] Banned user, ignoring")
                 return
 
-        # Добавляем метаданные юзера к промпту
+        # Добавляем метаданные юзера и время к промпту
+        now = datetime.now(tz=settings.get_timezone())
+        time_meta = now.strftime("%d.%m.%Y %H:%M")
         user_meta = self._format_user_meta(sender)
-        prompt = f"{user_meta}\n\n{prompt}"
+        prompt = f"[{time_meta}] {user_meta}\n\n{prompt}"
 
         input_chat = await event.get_input_chat()
 
@@ -232,8 +246,11 @@ class TelegramHandlers:
             "WebSearch": "Ищу в интернете...",
             # Scheduler
             "schedule_task": "Планирую задачу...",
-            "list_scheduled_tasks": "Смотрю расписание...",
-            "cancel_scheduled_task": "Отменяю задачу...",
+            "cancel_task": "Отменяю задачу...",
+            # Triggers
+            "subscribe_trigger": "Подписываюсь...",
+            "unsubscribe_trigger": "Отписываюсь...",
+            "list_triggers": "Подписки...",
             # Memory
             "memory_search": "Ищу в памяти...",
             "memory_read": "Читаю память...",
@@ -245,29 +262,24 @@ class TelegramHandlers:
             "mcp_install": "Устанавливаю...",
             "mcp_list": "Список интеграций...",
             # User tools
+            "create_task": "Создаю задачу...",
+            "list_tasks": "Смотрю задачи...",
             "send_to_user": "Отправляю сообщение...",
-            "create_user_task": "Создаю задачу...",
-            "get_user_tasks": "Смотрю задачи...",
             "resolve_user": "Ищу пользователя...",
             "list_users": "Список пользователей...",
-            "get_overdue_tasks": "Проверяю просроченные...",
-            "send_summary_to_owner": "Отправляю сводку...",
-            "get_my_tasks": "Мои задачи...",
-            "update_task_status": "Обновляю статус...",
-            # Ban tools
             "ban_user": "Баню пользователя...",
             "unban_user": "Разбаниваю...",
-            "list_banned": "Список забаненных...",
+            # External user tools
+            "get_my_tasks": "Мои задачи...",
+            "update_task": "Обновляю задачу...",
+            "send_summary_to_owner": "Отправляю сводку...",
             "ban_violator": "Баню нарушителя...",
-            # Cross-session tools
-            "start_conversation": "Начинаю согласование...",
-            "get_conversation_status": "Проверяю статус...",
-            "get_active_conversations": "Активные задачи...",
-            "update_conversation": "Обновляю результат...",
             # Telegram tools
             "tg_send_message": "Отправляю сообщение...",
             "tg_send_media": "Отправляю медиа...",
             "tg_forward_message": "Пересылаю...",
+            "tg_send_comment": "Пишу комментарий...",
+            "tg_get_participants": "Список участников...",
             "tg_read_channel": "Читаю канал...",
             "tg_read_comments": "Читаю комменты...",
             "tg_read_chat": "Читаю чат...",
@@ -332,16 +344,20 @@ class TelegramHandlers:
         elif message.document:
             try:
                 doc = message.document
-                # Получаем имя файла из атрибутов
-                filename = "document"
-                for attr in doc.attributes:
-                    if hasattr(attr, "file_name"):
-                        filename = attr.file_name
-                        break
+                if doc.size and doc.size > MAX_MEDIA_SIZE:
+                    size_mb = doc.size // 1024 // 1024
+                    media_context = f"[Файл слишком большой: {size_mb} MB, макс {MAX_MEDIA_SIZE // 1024 // 1024} MB]"
+                else:
+                    # Получаем имя файла из атрибутов
+                    filename = "document"
+                    for attr in doc.attributes:
+                        if hasattr(attr, "file_name"):
+                            filename = attr.file_name
+                            break
 
-                doc_data = await self._client.download_media(doc, bytes)
-                path = await save_media(doc_data, filename, subfolder="documents")
-                media_context = f"[Файл сохранён: {path}]"
+                    doc_data = await self._client.download_media(doc, bytes)
+                    path = await save_media(doc_data, filename, subfolder="documents")
+                    media_context = f"[Файл сохранён: {path}]"
             except Exception as e:
                 logger.error(f"Document save failed: {e}")
 

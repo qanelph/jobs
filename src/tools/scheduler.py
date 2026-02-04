@@ -1,146 +1,26 @@
 """
 Scheduler Tool — планирование задач.
+
+Расписание — это свойство Task (kind="scheduled").
+Scheduler читает из таблицы tasks вместо отдельной scheduled_tasks.
 """
 
-import asyncio
-from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Any, Callable, Awaitable
-import uuid
+from __future__ import annotations
 
-import aiosqlite
+import asyncio
+from datetime import datetime, timedelta
+from typing import Any, TYPE_CHECKING
+
 from claude_agent_sdk import tool
 from loguru import logger
 
 from src.config import settings
 
+if TYPE_CHECKING:
+    from src.triggers.executor import TriggerExecutor
+
 # Timezone для парсинга времени
 _tz = settings.get_timezone()
-
-
-# =============================================================================
-# Storage
-# =============================================================================
-
-
-@dataclass
-class ScheduledTask:
-    id: str
-    prompt: str
-    scheduled_at: datetime
-    repeat_seconds: int | None = None
-    status: str = "pending"
-
-
-class SchedulerStorage:
-    def __init__(self, db_path: str) -> None:
-        self._db_path = db_path
-        self._db: aiosqlite.Connection | None = None
-
-    async def _get_db(self) -> aiosqlite.Connection:
-        if self._db is None:
-            self._db = await aiosqlite.connect(self._db_path)
-            self._db.row_factory = aiosqlite.Row
-            await self._init_schema()
-        return self._db
-
-    async def _init_schema(self) -> None:
-        await self._db.execute("PRAGMA journal_mode=WAL")
-        await self._db.execute("""
-            CREATE TABLE IF NOT EXISTS scheduled_tasks (
-                id TEXT PRIMARY KEY,
-                prompt TEXT NOT NULL,
-                scheduled_at TEXT NOT NULL,
-                repeat_seconds INTEGER,
-                status TEXT DEFAULT 'pending'
-            )
-        """)
-        await self._db.execute("CREATE INDEX IF NOT EXISTS idx_status ON scheduled_tasks(status)")
-        await self._db.commit()
-
-    async def add(
-        self,
-        task_id: str,
-        prompt: str,
-        scheduled_at: datetime,
-        repeat_seconds: int | None = None,
-    ) -> None:
-        db = await self._get_db()
-        await db.execute(
-            "INSERT INTO scheduled_tasks (id, prompt, scheduled_at, repeat_seconds) VALUES (?, ?, ?, ?)",
-            (task_id, prompt, scheduled_at.isoformat(), repeat_seconds),
-        )
-        await db.commit()
-
-    async def get_pending(self) -> list[ScheduledTask]:
-        db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT id, prompt, scheduled_at, repeat_seconds, status FROM scheduled_tasks WHERE status = 'pending' ORDER BY scheduled_at"
-        )
-        return [
-            ScheduledTask(
-                id=row["id"],
-                prompt=row["prompt"],
-                scheduled_at=datetime.fromisoformat(row["scheduled_at"]),
-                repeat_seconds=row["repeat_seconds"],
-                status=row["status"],
-            )
-            for row in await cursor.fetchall()
-        ]
-
-    async def get_due(self) -> list[ScheduledTask]:
-        db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT id, prompt, scheduled_at, repeat_seconds FROM scheduled_tasks WHERE status = 'pending' AND scheduled_at <= ?",
-            (datetime.now().isoformat(),),
-        )
-        return [
-            ScheduledTask(
-                id=row["id"],
-                prompt=row["prompt"],
-                scheduled_at=datetime.fromisoformat(row["scheduled_at"]),
-                repeat_seconds=row["repeat_seconds"],
-            )
-            for row in await cursor.fetchall()
-        ]
-
-    async def set_status(self, task_id: str, status: str) -> None:
-        db = await self._get_db()
-        await db.execute("UPDATE scheduled_tasks SET status = ? WHERE id = ?", (status, task_id))
-        await db.commit()
-
-    async def reschedule(self, task_id: str, new_scheduled_at: datetime) -> None:
-        """Перепланирует задачу на новое время."""
-        db = await self._get_db()
-        await db.execute(
-            "UPDATE scheduled_tasks SET scheduled_at = ?, status = 'pending' WHERE id = ?",
-            (new_scheduled_at.isoformat(), task_id),
-        )
-        await db.commit()
-
-    async def cancel(self, task_id: str) -> bool:
-        db = await self._get_db()
-        cursor = await db.execute(
-            "UPDATE scheduled_tasks SET status = 'cancelled' WHERE id = ? AND status = 'pending'",
-            (task_id,),
-        )
-        await db.commit()
-        return cursor.rowcount > 0
-
-    async def close(self) -> None:
-        if self._db:
-            await self._db.close()
-            self._db = None
-
-
-_storage: SchedulerStorage | None = None
-
-
-def get_storage() -> SchedulerStorage:
-    global _storage
-    if _storage is None:
-        _storage = SchedulerStorage(str(settings.db_path))
-    return _storage
 
 
 # =============================================================================
@@ -150,20 +30,26 @@ def get_storage() -> SchedulerStorage:
 
 @tool(
     "schedule_task",
-    "Schedule a task. Time format: 'HH:MM' for today, 'YYYY-MM-DD HH:MM' for specific date. Repeat: '24h', '1h', '30m', or None.",
+    "Schedule a task. Time format: 'HH:MM' for today, 'YYYY-MM-DD HH:MM' for specific date. "
+    "Repeat: '24h', '1h', '30m', or None. prompt is optional (defaults to title).",
     {
+        "title": str,
         "prompt": str,
         "time": str,
         "repeat": str,
     },
 )
 async def schedule_task(args: dict[str, Any]) -> dict[str, Any]:
+    title: str | None = args.get("title")
     prompt: str | None = args.get("prompt")
     time_str: str | None = args.get("time")
     repeat: str | None = args.get("repeat")
 
-    if not prompt:
-        return _error("prompt обязателен")
+    if not title and not prompt:
+        return _error("title или prompt обязателен")
+
+    if not title:
+        title = prompt[:80]
 
     if not time_str:
         return _error("time обязателен (формат: HH:MM или YYYY-MM-DD HH:MM)")
@@ -181,50 +67,51 @@ async def schedule_task(args: dict[str, Any]) -> dict[str, Any]:
     # Парсим repeat
     repeat_seconds = _parse_repeat(repeat) if repeat else None
 
-    task_id = str(uuid.uuid4())[:8]
+    # Создаём Task с kind="scheduled"
+    from src.users.repository import get_users_repository
+    repo = get_users_repository()
 
-    await get_storage().add(
-        task_id=task_id,
-        prompt=prompt,
-        scheduled_at=scheduled_at,
-        repeat_seconds=repeat_seconds,
+    context = {"prompt": prompt} if prompt else {}
+
+    task = await repo.create_task(
+        title=title,
+        kind="scheduled",
+        created_by=settings.tg_user_id,
+        context=context,
+        schedule_at=scheduled_at,
+        schedule_repeat=repeat_seconds,
     )
 
     time_display = scheduled_at.strftime("%d.%m %H:%M")
     repeat_str = f", повтор: {repeat}" if repeat else ""
-    logger.info(f"Scheduled [{task_id}]: {prompt[:40]}... at {time_display}{repeat_str}")
+    logger.info(f"Scheduled [{task.id}]: {title[:40]}... at {time_display}{repeat_str}")
 
-    return _text(f"[{task_id}] {time_display}{repeat_str}\n{prompt}")
-
-
-@tool("list_scheduled_tasks", "List pending tasks", {})
-async def list_scheduled_tasks(args: dict[str, Any]) -> dict[str, Any]:
-    tasks = await get_storage().get_pending()
-
-    if not tasks:
-        return _text("Нет задач")
-
-    lines = []
-    for t in tasks:
-        time_str = t.scheduled_at.strftime("%d.%m %H:%M")
-        repeat = f" (каждые {t.repeat_seconds}с)" if t.repeat_seconds else ""
-        lines.append(f"• [{t.id}] {time_str}{repeat}: {t.prompt[:40]}...")
-
-    return _text("\n".join(lines))
+    return _text(f"[{task.id}] {time_display}{repeat_str}\n{title}")
 
 
-@tool("cancel_scheduled_task", "Cancel task by ID", {"task_id": str})
-async def cancel_scheduled_task(args: dict[str, Any]) -> dict[str, Any]:
+@tool("cancel_task", "Cancel any task by ID", {"task_id": str})
+async def cancel_task(args: dict[str, Any]) -> dict[str, Any]:
     task_id = args.get("task_id")
     if not task_id:
         return _error("task_id обязателен")
 
-    if await get_storage().cancel(task_id):
+    from src.users.repository import get_users_repository
+    repo = get_users_repository()
+
+    task = await repo.get_task(task_id)
+    if not task:
+        return _error(f"[{task_id}] не найдена")
+
+    if task.status in ("done", "cancelled"):
+        return _error(f"[{task_id}] уже {task.status}")
+
+    success = await repo.update_task(task_id, status="cancelled")
+    if success:
         return _text(f"[{task_id}] отменена")
-    return _error(f"[{task_id}] не найдена")
+    return _error(f"[{task_id}] не удалось отменить")
 
 
-SCHEDULER_TOOLS = [schedule_task, list_scheduled_tasks, cancel_scheduled_task]
+SCHEDULER_TOOLS = [schedule_task, cancel_task]
 
 
 # =============================================================================
@@ -233,8 +120,8 @@ SCHEDULER_TOOLS = [schedule_task, list_scheduled_tasks, cancel_scheduled_task]
 
 
 class SchedulerRunner:
-    def __init__(self, on_task_due: Callable[[str, str], Awaitable[None]]) -> None:
-        self._on_task_due = on_task_due
+    def __init__(self, executor: TriggerExecutor) -> None:
+        self._executor = executor
         self._running = False
         self._task: asyncio.Task | None = None
 
@@ -264,27 +151,43 @@ class SchedulerRunner:
             await asyncio.sleep(30)
 
     async def _check(self) -> None:
-        storage = get_storage()
-        tasks = await storage.get_due()
+        from src.users.repository import get_users_repository
+        from src.triggers.models import TriggerEvent
+
+        repo = get_users_repository()
+
+        tasks = await repo.get_scheduled_due()
 
         for task in tasks:
-            logger.info(f"Executing [{task.id}]: {task.prompt[:40]}")
-            await storage.set_status(task.id, "running")
+            prompt = task.context.get("prompt") or task.title
+            logger.info(f"Executing [{task.id}]: {prompt[:40]}")
+
+            # Для repeating: сдвигаем schedule_at ВПЕРЁД ДО выполнения
+            # (защита от двойного срабатывания)
+            if task.schedule_repeat:
+                next_at = datetime.now() + timedelta(seconds=task.schedule_repeat)
+                await repo.update_schedule(task.id, next_at)
+                logger.info(f"Rescheduled [{task.id}] to {next_at.strftime('%H:%M')}")
+            else:
+                # One-time: очищаем schedule_at
+                await repo.update_schedule(task.id, None)
 
             try:
-                await self._on_task_due(task.id, task.prompt)
+                event = TriggerEvent(
+                    source="scheduler",
+                    prompt=prompt,
+                    context={"task_id": task.id},
+                    preview_message=f"Выполняю задачу:\n{prompt}",
+                    result_prefix=f"Результат [{task.id}]:",
+                )
+                await self._executor.execute(event)
 
-                # Если повторяющаяся — перепланируем
-                if task.repeat_seconds:
-                    next_at = datetime.now() + timedelta(seconds=task.repeat_seconds)
-                    await storage.reschedule(task.id, next_at)
-                    logger.info(f"Rescheduled [{task.id}] to {next_at.strftime('%H:%M')}")
-                else:
-                    await storage.set_status(task.id, "completed")
+                # One-time: ставим done после успеха
+                if not task.schedule_repeat:
+                    await repo.update_task(task.id, status="done")
 
             except Exception as e:
                 logger.error(f"Task [{task.id}] failed: {e}")
-                await storage.set_status(task.id, "failed")
 
 
 # =============================================================================

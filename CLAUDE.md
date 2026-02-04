@@ -21,10 +21,17 @@
 │  │   default perms     │   Только: get_my_tasks,                │
 │  └─────────────────────┘   send_summary_to_owner, update_task   │
 │                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │          TriggerManager                                   │   │
+│  │  builtin: scheduler, heartbeat                            │   │
+│  │  dynamic: tg_channel subscriptions (DB)                   │   │
+│  │         → TriggerExecutor → owner session.query()         │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
 │            ↓                                                     │
 │  ┌─────────────────────────────────────────────────────────┐   │
 │  │              SQLite (db.sqlite)                          │   │
-│  │  • external_users  • user_tasks  • scheduled_tasks       │   │
+│  │  • external_users  • tasks  • trigger_subscriptions       │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                  │
 │  /data/sessions/  — Claude session IDs                          │
@@ -51,9 +58,10 @@
 | Путь | Описание |
 |------|----------|
 | `src/users/` | SessionManager, Repository, Tools, Prompts |
-| `src/telegram/` | Telethon handlers |
+| `src/telegram/` | Telethon handlers + Telegram API tools |
 | `src/memory/` | MEMORY.md + vector search |
 | `src/tools/` | Scheduler + разделение по ролям |
+| `src/triggers/` | Unified trigger system (scheduler, heartbeat, tg_channel) |
 | `src/mcp_manager/` | Внешние MCP серверы |
 | `src/plugin_manager/` | Плагины из маркетплейса |
 | `src/skill_manager/` | Управление локальными skills |
@@ -178,6 +186,26 @@ tools: Read, Bash
 - Маркетплейс: `/data/.claude/plugins/marketplaces/`
 - Конфиг: `/data/plugins.json`
 
+## Triggers (unified trigger system)
+
+Все источники событий проходят через `TriggerExecutor.execute(TriggerEvent)`.
+
+**Встроенные (builtin):**
+- `scheduler` — выполнение scheduled-задач по расписанию
+- `heartbeat` — проактивные проверки (задачи, напоминания)
+
+**Динамические (runtime, через tools):**
+- `tg_channel` — подписка на посты в Telegram каналах/группах
+
+**Tools:**
+| Tool | Описание |
+|------|----------|
+| `subscribe_trigger` | Подписаться на источник событий |
+| `unsubscribe_trigger` | Отписаться |
+| `list_triggers` | Список активных подписок |
+
+Подписки хранятся в SQLite (`trigger_subscriptions`), восстанавливаются при рестарте.
+
 ## Разделение доступа
 
 | Tool | Owner | External |
@@ -185,11 +213,12 @@ tools: Read, Bash
 | Bash, Read, Write | ✅ | ❌ |
 | Memory | ✅ | ❌ |
 | Scheduler | ✅ | ❌ |
+| Triggers | ✅ | ❌ |
 | Browser | ✅ | ❌ |
 | MCP Manager | ✅ | ❌ |
 | Telegram API | ✅ | ❌ |
 | send_to_user | ✅ | ❌ |
-| create_user_task | ✅ | ❌ |
+| create_task | ✅ | ❌ |
 | send_summary_to_owner | ❌ | ✅ |
 | get_my_tasks | ❌ | ✅ |
 
@@ -214,6 +243,7 @@ get_storage()           # Файловая память
 get_index()             # Векторный поиск
 get_mcp_config()        # MCP серверы
 get_plugin_config()     # Плагины
+get_trigger_manager()   # Триггеры и подписки
 ```
 
 ## Запуск
@@ -226,11 +256,19 @@ docker-compose up
 - `jobs` — основной контейнер с ботом
 - `browser` — Chromium с CDP и noVNC
 
+## Session Context
+
+`UserSession` хранит буфер последних 10 сообщений (`_context`).
+Контекст подкладывается в начало каждого prompt — ассистент видит
+предыдущий обмен даже если session resume не сработал.
+
+Таймаут на Claude SDK: 5 минут (`QUERY_TIMEOUT_SECONDS`).
+
 ## Хранение
 
 ```
 /data/
-├── db.sqlite           # SQLite БД
+├── db.sqlite           # SQLite БД (users, tasks, trigger_subscriptions)
 ├── sessions/           # Claude session IDs
 │   ├── {owner_id}.session
 │   └── {user_id}.session
@@ -241,7 +279,7 @@ docker-compose up
 /workspace/
 ├── MEMORY.md           # Долгосрочная память
 ├── memory/             # Дневные логи
-└── uploads/            # Файлы от пользователей
+└── uploads/            # Файлы от пользователей (макс 50 MB)
 
 Docker volumes:
 ├── jobs-workspace      # Рабочая директория

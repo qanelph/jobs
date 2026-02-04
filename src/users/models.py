@@ -4,7 +4,7 @@ Models — модели данных для внешних пользовате�
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal, Any
+from typing import Literal
 import json
 
 
@@ -44,65 +44,58 @@ class ExternalUser:
 
 
 @dataclass
-class UserTask:
-    """Задача, назначенная пользователю."""
+class Task:
+    """Универсальная единица работы: поручение, согласование, проверка, напоминание."""
 
     id: str
-    assignee_id: int
-    description: str
+    title: str
+    status: Literal["pending", "in_progress", "done", "cancelled"] = "pending"
+
+    # Кто
+    created_by: int | None = None       # telegram_id создателя
+    assignee_id: int | None = None      # telegram_id исполнителя (None = системная)
+
+    # Когда
     deadline: datetime | None = None
-    status: Literal["pending", "accepted", "completed", "overdue"] = "pending"
     created_at: datetime = field(default_factory=datetime.now)
-    created_by: int | None = None  # telegram_id того, кто создал
+    updated_at: datetime = field(default_factory=datetime.now)
+
+    # Что (гибкий payload)
+    kind: str = "task"                  # task, meeting, question, check, reminder, scheduled, ...
+    context: dict = field(default_factory=dict)  # Входные данные
+    result: dict | None = None          # Результат
+
+    # Расписание (для kind="scheduled")
+    schedule_at: datetime | None = None      # Следующее время выполнения
+    schedule_repeat: int | None = None       # Интервал повтора (секунды), None = одноразово
 
     @property
     def is_overdue(self) -> bool:
         """Просрочена ли задача."""
-        if self.deadline and self.status not in ("completed",):
+        if self.deadline and self.status not in ("done", "cancelled"):
             return datetime.now() > self.deadline
         return False
 
-
-@dataclass
-class ConversationTask:
-    """
-    Задача согласования между owner и user.
-
-    Позволяет owner'у делегировать общение с user'ом,
-    при этом user session получает контекст задачи.
-    """
-
-    id: str
-    owner_id: int                 # Кто создал задачу
-    user_id: int                  # С кем общаемся
-    task_type: Literal["meeting", "question", "custom"] = "custom"
-    title: str = ""               # Краткое описание для user
-    context: dict = field(default_factory=dict)  # Контекст для user session
-    status: Literal["pending", "in_progress", "completed", "cancelled"] = "pending"
-    result: dict | None = None    # Результат согласования
-    created_at: datetime = field(default_factory=datetime.now)
-    updated_at: datetime = field(default_factory=datetime.now)
-
-    def context_json(self) -> str:
-        """Сериализует context в JSON."""
-        return json.dumps(self.context, ensure_ascii=False)
-
-    def result_json(self) -> str | None:
-        """Сериализует result в JSON."""
-        return json.dumps(self.result, ensure_ascii=False) if self.result else None
+    @property
+    def is_scheduled(self) -> bool:
+        """Является ли задача запланированной."""
+        return self.kind == "scheduled" and self.schedule_at is not None
 
     @staticmethod
-    def from_row(row: dict) -> "ConversationTask":
+    def from_row(row: dict) -> "Task":
         """Создаёт из строки БД."""
-        return ConversationTask(
+        return Task(
             id=row["id"],
-            owner_id=row["owner_id"],
-            user_id=row["user_id"],
-            task_type=row["task_type"],
             title=row["title"],
-            context=json.loads(row["context"]) if row["context"] else {},
             status=row["status"],
+            created_by=row["created_by"],
+            assignee_id=row["assignee_id"],
+            deadline=datetime.fromisoformat(row["deadline"]) if row["deadline"] else None,
+            created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.now(),
+            updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.now(),
+            kind=row["kind"] or "task",
+            context=json.loads(row["context"]) if row["context"] else {},
             result=json.loads(row["result"]) if row["result"] else None,
-            created_at=datetime.fromisoformat(row["created_at"]),
-            updated_at=datetime.fromisoformat(row["updated_at"]),
+            schedule_at=datetime.fromisoformat(row["schedule_at"]) if row.get("schedule_at") else None,
+            schedule_repeat=row.get("schedule_repeat"),
         )

@@ -24,12 +24,11 @@ EXTERNAL_ALLOWED_TOOLS = [
 
 ## Все инструменты
 
-### Scheduler (3) — только Owner
+### Scheduler (2) — только Owner
 | Tool | Описание |
 |------|----------|
-| `schedule_task(prompt, relative_seconds, repeat_seconds?)` | Запланировать задачу |
-| `list_scheduled_tasks()` | Список запланированных |
-| `cancel_scheduled_task(task_id)` | Отменить задачу |
+| `schedule_task(title, prompt?, time, repeat?)` | Запланировать задачу (создаёт Task с kind="scheduled") |
+| `cancel_task(task_id)` | Отменить любую задачу |
 
 ### Memory (6) — только Owner
 | Tool | Описание |
@@ -56,16 +55,9 @@ EXTERNAL_ALLOWED_TOOLS = [
 
 ## Scheduler (scheduler.py)
 
-### ScheduledTask
-```python
-@dataclass
-class ScheduledTask:
-    id: str                    # UUID
-    prompt: str                # Что выполнить
-    scheduled_at: datetime     # Когда
-    repeat_seconds: int | None # Интервал повторения
-    status: str = "pending"    # pending/completed/failed/cancelled
-```
+Расписание — свойство Task (kind="scheduled", schedule_at, schedule_repeat).
+Scheduler читает из таблицы `tasks` через `repo.get_scheduled_due()`.
+Для списка: `list_tasks(kind="scheduled")`.
 
 ### SchedulerRunner
 ```python
@@ -74,7 +66,7 @@ class SchedulerRunner:
         # callback вызывается когда задача готова к выполнению
 
     async def start(self):
-        # Каждые 30 секунд проверяет due tasks
+        # Каждые 30 секунд проверяет due tasks через repo.get_scheduled_due()
 ```
 
 ## create_tools_server()

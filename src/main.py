@@ -17,7 +17,9 @@ from src.setup import run_setup, is_telegram_configured, is_claude_configured
 from src.tools.scheduler import SchedulerRunner
 from src.users import get_session_manager
 from src.memory import get_storage
-from src.heartbeat import HeartbeatRunner, set_heartbeat_client
+from src.heartbeat import HeartbeatRunner
+from src.triggers import TriggerExecutor, TriggerManager, set_trigger_manager
+from src.triggers.sources.tg_channel import TelegramChannelTrigger
 
 
 def setup_logging() -> None:
@@ -30,48 +32,8 @@ def setup_logging() -> None:
     )
 
 
-async def on_heartbeat_alert(message: str) -> None:
-    """Callback для heartbeat уведомлений."""
-    logger.info(f"Heartbeat alert: {message[:50]}...")
-
-    client = _telegram_client
-    await client.send_message(settings.tg_user_id, message)
-
-
-async def on_scheduled_task(task_id: str, prompt: str) -> None:
-    """Callback для выполнения запланированной задачи."""
-    logger.info(f"Executing task {task_id}")
-
-    # Получаем клиент из глобального контекста
-    client = _telegram_client
-
-    await client.send_message(
-        settings.tg_user_id,
-        f"Выполняю задачу:\n{prompt}",
-    )
-
-    # Используем сессию owner'а для scheduled tasks
-    session_manager = get_session_manager()
-    session = session_manager.get_owner_session()
-    content = await session.query(prompt)
-
-    if len(content) > 4000:
-        content = content[:4000] + "..."
-
-    await client.send_message(
-        settings.tg_user_id,
-        f"Результат [{task_id}]:\n{content}",
-    )
-
-
-# Глобальная ссылка на клиент для scheduler callback
-_telegram_client = None
-
-
 async def main() -> None:
     """Точка входа."""
-    global _telegram_client
-
     setup_logging()
     logger.info("Starting Jobs - Personal AI Assistant")
 
@@ -89,8 +51,6 @@ async def main() -> None:
     # Создаём клиент
     session_string = load_session_string()
     client = create_client(session_string)
-    _telegram_client = client
-    set_heartbeat_client(client)  # Для отправки напоминаний
     set_telegram_client(client)  # Для Telegram tools
 
     try:
@@ -124,22 +84,35 @@ async def main() -> None:
         logger.error(f"Connection error: {e}")
         raise
 
-    # Запускаем scheduler
-    scheduler = SchedulerRunner(on_task_due=on_scheduled_task)
-    await scheduler.start()
+    # Unified Trigger System
+    session_manager = get_session_manager()
+    executor = TriggerExecutor(client, session_manager)
+    trigger_manager = TriggerManager(executor, client, str(settings.db_path))
 
-    # Запускаем heartbeat (если включён)
-    heartbeat = None
+    # Регистрируем типы динамических триггеров
+    trigger_manager.register_type("tg_channel", TelegramChannelTrigger)
+
+    # Регистрируем встроенные
+    scheduler = SchedulerRunner(executor=executor)
+    trigger_manager.register_builtin("scheduler", scheduler)
+
     if settings.heartbeat_interval_minutes > 0:
         heartbeat = HeartbeatRunner(
-            on_alert=on_heartbeat_alert,
+            executor=executor,
+            client=client,
             interval_minutes=settings.heartbeat_interval_minutes,
         )
-        await heartbeat.start()
+        trigger_manager.register_builtin("heartbeat", heartbeat)
     else:
         logger.info("Heartbeat disabled (interval=0)")
 
-    # Регистрируем handlers
+    # Устанавливаем singleton для trigger tools
+    set_trigger_manager(trigger_manager)
+
+    # Запуск (builtins + загрузка подписок из DB)
+    await trigger_manager.start_all()
+
+    # Регистрируем handlers (интерактивный Telegram — отдельно)
     handlers = TelegramHandlers(client)
     handlers.register()
 
@@ -148,9 +121,7 @@ async def main() -> None:
     try:
         await client.run_until_disconnected()
     finally:
-        if heartbeat:
-            await heartbeat.stop()
-        await scheduler.stop()
+        await trigger_manager.stop_all()
 
 
 if __name__ == "__main__":

@@ -112,7 +112,7 @@ async def plugin_install(args: dict[str, Any]) -> dict[str, Any]:
 
     # Сбрасываем сессию
     from src.users import get_session_manager
-    get_session_manager().reset_all()
+    await get_session_manager().reset_all()
 
     features = []
     if plugin_info.has_skills:
@@ -193,7 +193,7 @@ async def plugin_enable(args: dict[str, Any]) -> dict[str, Any]:
     if config.enable_plugin(name):
         save_plugin_config()
         from src.users import get_session_manager
-        get_session_manager().reset_all()
+        await get_session_manager().reset_all()
         return _text(f"Плагин {name} включён. Сессия перезапустится при следующем сообщении.")
 
     return _error(f"Плагин '{name}' не установлен")
@@ -218,7 +218,7 @@ async def plugin_disable(args: dict[str, Any]) -> dict[str, Any]:
     if config.disable_plugin(name):
         save_plugin_config()
         from src.users import get_session_manager
-        get_session_manager().reset_all()
+        await get_session_manager().reset_all()
         return _text(f"Плагин {name} отключён. Сессия перезапустится при следующем сообщении.")
 
     return _error(f"Плагин '{name}' не установлен")
@@ -243,7 +243,7 @@ async def plugin_remove(args: dict[str, Any]) -> dict[str, Any]:
     if config.remove_plugin(name):
         save_plugin_config()
         from src.users import get_session_manager
-        get_session_manager().reset_all()
+        await get_session_manager().reset_all()
         return _text(f"Плагин {name} удалён. Сессия перезапустится при следующем сообщении.")
 
     return _error(f"Плагин '{name}' не установлен")

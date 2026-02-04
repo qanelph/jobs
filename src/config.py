@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     # Claude (API key опционален при OAuth)
     anthropic_api_key: str | None = None
     claude_model: str = "claude-opus-4-5-20251101"  # Opus 4.5
-    http_proxy: str = "http://PbxzTVqF:NjR4RB3u@45.199.204.185:62176"
+    http_proxy: str | None = None
 
     # OpenAI (для Whisper транскрипции)
     openai_api_key: str | None = None

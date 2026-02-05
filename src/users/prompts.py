@@ -95,9 +95,10 @@ Timezone: {_TZ}
 - `schedule_task(title, prompt?, time, repeat?)` — создать задачу по расписанию
 - `cancel_task(task_id)` — отменить любую задачу
 - `list_tasks(kind="scheduled")` — посмотреть запланированные задачи
+- `read_task_context(task_id)` — прочитать контекст выполненной задачи (prompt + result)
 
 Когда берёшь обязательство на расписание — ВСЕГДА используй `schedule_task`.
-`memory_append` — для фактов и контекста, НЕ для action items.
+Контекст background задач сохраняется — используй `read_task_context("recent")` для списка.
 
 ## Подписки на события
 

@@ -466,6 +466,76 @@ async def ban_violator(args: dict[str, Any]) -> dict[str, Any]:
 
 
 # =============================================================================
+# Task Context Tools
+# =============================================================================
+
+
+@tool(
+    "read_task_context",
+    "Read the full context (prompt + result) of a background task execution. "
+    "Use task_id from list_tasks or 'recent' to see last 10 tasks.",
+    {"task_id": str},
+)
+async def read_task_context(args: dict[str, Any]) -> dict[str, Any]:
+    """Читает контекст выполненной background задачи."""
+    import json
+    from pathlib import Path
+    from src.config import settings
+
+    task_id = args.get("task_id", "").strip()
+
+    if not task_id:
+        return _error("task_id обязателен. Используй 'recent' для последних задач.")
+
+    transcripts_dir = Path(settings.data_dir) / "task_transcripts"
+
+    # Показать последние задачи
+    if task_id.lower() == "recent":
+        recent_file = transcripts_dir / "recent.jsonl"
+        if not recent_file.exists():
+            return _text("Нет сохранённых задач")
+
+        lines = recent_file.read_text().strip().split("\n")[-10:]
+        tasks = []
+        for line in lines:
+            try:
+                t = json.loads(line)
+                tasks.append(f"[{t['task_id']}] {t['timestamp'][:16]} — {t['prompt'][:50]}...")
+            except Exception:
+                continue
+
+        if not tasks:
+            return _text("Нет сохранённых задач")
+
+        return _text("Последние задачи:\n" + "\n".join(tasks))
+
+    # Читаем конкретную задачу
+    transcript_file = transcripts_dir / f"{task_id}.json"
+
+    if not transcript_file.exists():
+        return _error(f"Transcript для задачи [{task_id}] не найден")
+
+    try:
+        transcript = json.loads(transcript_file.read_text())
+    except Exception as e:
+        return _error(f"Ошибка чтения: {e}")
+
+    output = [
+        f"**Задача [{transcript['task_id']}]**",
+        f"Время: {transcript['timestamp']}",
+        f"Источник: {transcript['source']}",
+        "",
+        "**Prompt:**",
+        transcript["prompt"],
+        "",
+        "**Result:**",
+        transcript["result"],
+    ]
+
+    return _text("\n".join(output))
+
+
+# =============================================================================
 # Tool Collections
 # =============================================================================
 
@@ -477,6 +547,7 @@ OWNER_TOOLS = [
     list_users,
     ban_user,
     unban_user,
+    read_task_context,
 ]
 
 EXTERNAL_USER_TOOLS = [

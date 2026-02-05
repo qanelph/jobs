@@ -6,7 +6,13 @@ TriggerExecutor — единая точка выполнения TriggerEvent.
 
 Каждое выполнение получает одноразовую сессию —
 параллельные задачи не блокируют друг друга и не прерывают owner.
+
+Transcript каждой задачи сохраняется для доступа из owner session.
 """
+
+import json
+from datetime import datetime
+from pathlib import Path
 
 from loguru import logger
 from telethon import TelegramClient
@@ -17,6 +23,7 @@ from src.users.session_manager import SessionManager
 
 
 MAX_MESSAGE_LENGTH = 4000
+TRANSCRIPTS_DIR = Path(settings.data_dir) / "task_transcripts"
 
 
 class TriggerExecutor:
@@ -72,6 +79,16 @@ class TriggerExecutor:
         if len(content) > MAX_MESSAGE_LENGTH:
             content = content[:MAX_MESSAGE_LENGTH] + "..."
 
+        # Сохраняем transcript для доступа из owner session
+        task_id = event.context.get("task_id") if event.context else None
+        if task_id:
+            self._save_transcript(
+                task_id=task_id,
+                source=event.source,
+                prompt=event.prompt,
+                result=content,
+            )
+
         # Deliver
         if event.notify_owner:
             await self.send_to_owner(content)
@@ -92,3 +109,44 @@ class TriggerExecutor:
         if buffer:
             owner_session = self._session_manager.get_session(settings.tg_user_id)
             owner_session.receive_incoming(f"[Background task output]\n{text}")
+
+    def _save_transcript(
+        self,
+        task_id: str,
+        source: str,
+        prompt: str,
+        result: str,
+    ) -> None:
+        """Сохраняет transcript задачи для доступа из owner session."""
+        TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+
+        transcript = {
+            "task_id": task_id,
+            "source": source,
+            "timestamp": datetime.now().isoformat(),
+            "prompt": prompt,
+            "result": result,
+        }
+
+        # Сохраняем по task_id
+        transcript_file = TRANSCRIPTS_DIR / f"{task_id}.json"
+        transcript_file.write_text(json.dumps(transcript, ensure_ascii=False, indent=2))
+
+        # Также добавляем в общий лог последних задач (для поиска)
+        recent_file = TRANSCRIPTS_DIR / "recent.jsonl"
+        with open(recent_file, "a") as f:
+            f.write(json.dumps(transcript, ensure_ascii=False) + "\n")
+
+        # Держим только последние 100 записей в recent
+        self._trim_recent_log(recent_file, max_lines=100)
+
+        logger.debug(f"Saved transcript for task [{task_id}]")
+
+    def _trim_recent_log(self, file: Path, max_lines: int) -> None:
+        """Обрезает лог до последних N строк."""
+        if not file.exists():
+            return
+
+        lines = file.read_text().strip().split("\n")
+        if len(lines) > max_lines:
+            file.write_text("\n".join(lines[-max_lines:]) + "\n")

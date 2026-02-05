@@ -159,8 +159,16 @@ class SchedulerRunner:
         tasks = await repo.get_scheduled_due()
 
         for task in tasks:
-            prompt = task.context.get("prompt") or task.title
-            logger.info(f"Executing [{task.id}]: {prompt[:40]}")
+            base_prompt = task.context.get("prompt") or task.title
+            logger.info(f"Executing [{task.id}]: {base_prompt[:40]}")
+
+            # Инструкция: не отправлять сообщения другим без явного указания
+            prompt = (
+                f"{base_prompt}\n\n---\n"
+                "[Системная инструкция: Это автоматическая задача по расписанию. "
+                "Если в задаче НЕ указаны конкретные получатели, "
+                "НЕ отправляй сообщения другим пользователям — только выполни задачу и верни результат owner'у.]"
+            )
 
             # Для repeating: сдвигаем schedule_at ВПЕРЁД ДО выполнения
             # (защита от двойного срабатывания)

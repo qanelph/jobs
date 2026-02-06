@@ -268,17 +268,23 @@ class TelegramHandlers:
                         await self._set_typing(input_chat, typing=True)
                         last_typing = asyncio.get_event_loop().time()
 
-                # Финальный ответ — только если ничего не отправляли
-                elif is_final and text and not has_sent_anything:
+                # Финальный ответ
+                elif is_final and text:
                     final_text = text.strip()
                     if final_text:
-                        if tool_msg:
-                            await self._safe_delete(tool_msg)
-                            tool_msg = None
-                        await event.reply(final_text)
+                        # Ошибки показываем всегда, обычный текст — только если ничего не отправляли
+                        is_error = final_text.startswith("Ошибка:")
+                        if is_error or not has_sent_anything:
+                            if tool_msg:
+                                await self._safe_delete(tool_msg)
+                                tool_msg = None
+                            await event.reply(final_text)
 
         except Exception as e:
             logger.error(f"Error: {e}")
+            if tool_msg:
+                await self._safe_delete(tool_msg)
+                tool_msg = None
             await event.reply(f"Ошибка: {e}")
 
         finally:
@@ -491,6 +497,7 @@ class TelegramHandlers:
             "browser_handle_dialog": "Обрабатываю диалог...",
             "browser_file_upload": "Загружаю файл...",
             "browser_close": "Закрываю браузер...",
+            "browser_proxy": "Переключаю прокси...",
         }
 
         return tools_display.get(clean_name, "Работаю...")

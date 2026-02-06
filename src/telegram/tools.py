@@ -518,6 +518,55 @@ async def tg_download_media(args: dict[str, Any]) -> dict[str, Any]:
 
 
 # =============================================================================
+# Browser Control
+# =============================================================================
+
+BROWSER_CONTROL_FILE = Path("/browser-control/proxy_enabled")
+SUPERVISORD_URL = f"http://browser:9001/RPC2"
+
+
+@tool(
+    "browser_proxy",
+    "Toggle browser proxy. enabled=true routes traffic through proxy, enabled=false connects directly.",
+    {"enabled": bool},
+)
+async def browser_proxy(args: dict[str, Any]) -> dict[str, Any]:
+    """Переключает прокси в браузере."""
+    import aiohttp
+    import xmlrpc.client
+
+    enabled = args.get("enabled")
+    if enabled is None:
+        return _error("enabled обязателен (true/false)")
+
+    # Пишем флаг
+    BROWSER_CONTROL_FILE.parent.mkdir(parents=True, exist_ok=True)
+    BROWSER_CONTROL_FILE.write_text("1" if enabled else "0")
+    logger.info(f"Browser proxy set to {'ON' if enabled else 'OFF'}")
+
+    # Рестартим Chromium через supervisord XML-RPC
+    payload = xmlrpc.client.dumps(("chromium",), "supervisor.stopProcess")
+    headers = {"Content-Type": "text/xml"}
+
+    async with aiohttp.ClientSession() as session:
+        # Stop
+        async with session.post(SUPERVISORD_URL, data=payload, headers=headers) as resp:
+            await resp.text()
+
+        # Start
+        payload = xmlrpc.client.dumps(("chromium",), "supervisor.startProcess")
+        async with session.post(SUPERVISORD_URL, data=payload, headers=headers) as resp:
+            await resp.text()
+
+    # Ждём пока CDP поднимется
+    import asyncio
+    await asyncio.sleep(3)
+
+    mode = "через прокси" if enabled else "напрямую"
+    return _text(f"Браузер перезапущен — трафик идёт {mode}")
+
+
+# =============================================================================
 # Tool Collections
 # =============================================================================
 
@@ -534,6 +583,7 @@ TELEGRAM_TOOLS = [
     tg_get_participants,
     tg_get_dialogs,
     tg_download_media,
+    browser_proxy,
 ]
 
 TELEGRAM_TOOL_NAMES = [
@@ -549,6 +599,7 @@ TELEGRAM_TOOL_NAMES = [
     "mcp__jobs__tg_get_participants",
     "mcp__jobs__tg_get_dialogs",
     "mcp__jobs__tg_download_media",
+    "mcp__jobs__browser_proxy",
 ]
 
 

@@ -12,6 +12,7 @@ services:
       - jobs-workspace:/workspace  # Рабочая директория Claude
       - ./skills:/workspace/.claude/skills  # Skills для SDK
       - browser-recordings:/recordings:ro  # Аудио-записи из браузера (read-only)
+      - browser-control:/browser-control    # Управление браузером (proxy toggle)
     restart: unless-stopped
     stdin_open: true              # Для интерактивного логина
     tty: true
@@ -29,6 +30,7 @@ services:
       - browser-profile:/home/browser/.config/chromium  # Персистентный профиль
       - browser-downloads:/home/browser/Downloads       # Скачанные файлы
       - browser-recordings:/recordings                  # Аудио-записи (10-мин чанки)
+      - browser-control:/browser-control                # Управление из jobs (proxy toggle)
     ports:
       - "6080:6080"               # noVNC web interface (для просмотра)
       - "9223:9223"               # CDP proxy (для отладки)
@@ -45,3 +47,4 @@ volumes:
   browser-profile:                # Профиль Chromium (куки, сессии, история)
   browser-downloads:              # Скачанные файлы
   browser-recordings:             # Аудио-записи браузера (shared, 24ч retention)
+  browser-control:               # Управление браузером (proxy toggle)

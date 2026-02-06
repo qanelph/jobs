@@ -154,7 +154,11 @@ class UserSession:
 
             mcp_servers["browser"] = {
                 "command": "playwright-cdp-wrapper",
-                "args": [settings.browser_cdp_url],
+                "args": [
+                    settings.browser_cdp_url,
+                    "--timeout-action", "30000",
+                    "--timeout-navigation", "30000",
+                ],
                 "env": {"NO_PROXY": "browser,localhost,127.0.0.1"},
             }
 

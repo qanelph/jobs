@@ -19,7 +19,14 @@ export XDG_DATA_HOME=/home/browser/.local/share
 mkdir -p /home/browser/.cache/dconf
 mkdir -p /home/browser/.pki/nssdb
 
+PROXY_FLAG=""
+if [ -n "$HTTP_PROXY" ]; then
+    # Chromium ходит через локальный tinyproxy, который форвардит на upstream с авторизацией
+    PROXY_FLAG="--proxy-server=http://127.0.0.1:8888"
+fi
+
 exec chromium \
+    $PROXY_FLAG \
     --no-sandbox \
     --disable-gpu \
     --disable-dev-shm-usage \

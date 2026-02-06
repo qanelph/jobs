@@ -24,6 +24,7 @@ services:
     environment:
       - TZ=${TZ:-Europe/Moscow}
       - RESOLUTION=1920x1080x24
+      - HTTP_PROXY=${HTTP_PROXY:-}
     volumes:
       - browser-profile:/home/browser/.config/chromium  # Персистентный профиль
       - browser-downloads:/home/browser/Downloads       # Скачанные файлы

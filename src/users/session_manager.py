@@ -181,6 +181,7 @@ class UserSession:
             system_prompt=self._system_prompt,
             setting_sources=["project"],
             plugins=plugins,
+            max_buffer_size=100 * 1024 * 1024,
         )
 
         if self._session_id:

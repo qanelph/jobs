@@ -7,9 +7,11 @@ Telegram Handlers — обработка входящих сообщений.
 """
 
 import asyncio
-from datetime import datetime
+import json
+from datetime import datetime, timezone
 from typing import Any
 
+import aiohttp
 from telethon import TelegramClient, events
 from telethon.tl.functions.messages import SetTypingRequest
 from telethon.tl.types import SendMessageTypingAction, SendMessageCancelAction
@@ -152,6 +154,13 @@ class TelegramHandlers:
             await event.reply("Сессия сброшена.")
             return
 
+        # /usage — показать usage аккаунта (только owner)
+        if message.text and message.text.strip().lower() == "/usage":
+            if not is_owner:
+                return
+            await event.reply(await self._fetch_usage())
+            return
+
         # Обработка разных типов сообщений
         prompt, media_context = await self._extract_content(message)
 
@@ -203,6 +212,13 @@ class TelegramHandlers:
         session = session_manager.get_session(user_id, user_display_name)
 
         # Skills подхватываются автоматически через SDK (setting_sources=["project"])
+
+        # Если сессия уже обрабатывает запрос — буферизуем в incoming
+        # Follow-up цикл в query_stream подхватит это сообщение
+        if session._is_querying:
+            session.receive_incoming(prompt)
+            logger.info(f"[{'owner' if is_owner else user_id}] Buffered (session busy), queue: {len(session._incoming)}")
+            return
 
         last_typing = asyncio.get_event_loop().time()
         has_sent_anything = False
@@ -279,6 +295,81 @@ class TelegramHandlers:
             await message.delete()
         except Exception:
             pass
+
+    async def _fetch_usage(self) -> str:
+        """Запрашивает usage аккаунта через OAuth API."""
+        creds_file = settings.claude_dir / ".credentials.json"
+        if not creds_file.exists():
+            return "Credentials не найдены"
+
+        creds = json.loads(creds_file.read_text())
+        token = creds.get("claudeAiOauth", {}).get("accessToken")
+        if not token:
+            return "OAuth токен не найден"
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "anthropic-beta": "oauth-2025-04-20",
+            "User-Agent": "claude-code/2.0.31",
+        }
+
+        proxy = settings.http_proxy or None
+        async with aiohttp.ClientSession() as http:
+            async with http.get(
+                "https://api.anthropic.com/api/oauth/usage",
+                headers=headers,
+                proxy=proxy,
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    return f"Usage API error {resp.status}: {body[:200]}"
+                data = await resp.json()
+
+        windows = [
+            ("five_hour", "за 5ч"),
+            ("seven_day", "за 7д"),
+            ("seven_day_opus", "opus 7д"),
+            ("seven_day_sonnet", "sonnet 7д"),
+        ]
+
+        lines: list[str] = []
+        for key, label in windows:
+            info = data.get(key)
+            if not info:
+                continue
+            pct = info.get("utilization", 0)
+            bar = self._usage_bar(pct)
+            reset = info.get("resets_at")
+            reset_str = ""
+            if reset:
+                reset_at = datetime.fromisoformat(reset)
+                delta = reset_at - datetime.now(timezone.utc)
+                total_min = int(delta.total_seconds() / 60)
+                if total_min <= 0:
+                    reset_str = ", сброс сейчас"
+                elif total_min < 60:
+                    reset_str = f", сброс через {total_min}мин"
+                elif total_min < 1440:
+                    h, m = divmod(total_min, 60)
+                    reset_str = f", сброс через {h}ч {m}мин" if m else f", сброс через {h}ч"
+                else:
+                    d, rem = divmod(total_min, 1440)
+                    h = rem // 60
+                    reset_str = f", сброс через {d}д {h}ч" if h else f", сброс через {d}д"
+            lines.append(f"{bar} {pct:.0f}% {label}{reset_str}")
+
+        extra = data.get("extra_usage", {})
+        if extra and extra.get("is_enabled"):
+            used = extra.get("used_credits") or 0
+            limit = extra.get("monthly_limit") or 0
+            lines.append(f"доп: ${used:.2f} / ${limit:.2f}")
+
+        return "\n".join(lines) if lines else "Нет данных"
+
+    @staticmethod
+    def _usage_bar(pct: float) -> str:
+        filled = round(pct / 100 * 5)
+        return "▓" * filled + "░" * (5 - filled)
 
     def _format_user_meta(self, sender: Any) -> str:
         """Форматирует метаданные пользователя для добавления к промпту."""

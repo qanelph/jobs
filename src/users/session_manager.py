@@ -28,7 +28,7 @@ from src.mcp_manager.config import get_mcp_config
 from src.plugin_manager.config import get_plugin_config
 
 
-QUERY_TIMEOUT_SECONDS = 300  # 5 минут
+QUERY_TIMEOUT_SECONDS = 7200  # 2 часа
 
 
 class UserSession:
@@ -156,10 +156,15 @@ class UserSession:
                 "command": "playwright-cdp-wrapper",
                 "args": [
                     settings.browser_cdp_url,
-                    "--timeout-action", "30000",
-                    "--timeout-navigation", "30000",
+                    "--timeout-action", "5000",
+                    "--timeout-navigation", "15000",
+                    "--ignore-https-errors",
                 ],
-                "env": {"NO_PROXY": "browser,localhost,127.0.0.1"},
+                "env": {
+                    "NO_PROXY": "browser,localhost,127.0.0.1",
+                    "HTTP_PROXY": "",
+                    "HTTPS_PROXY": "",
+                },
             }
 
         if self._allowed_tools_override is not None:

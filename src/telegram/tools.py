@@ -39,17 +39,18 @@ def _get_client() -> TelegramClient:
 
 @tool(
     "tg_send_message",
-    "Send a text message to any chat, channel, or user. Chat can be @username, phone, or ID.",
+    "Send a text message to any chat, channel, or user. Chat can be @username, phone, or ID. "
+    "If chat is omitted, the message is sent to the owner.",
     {"chat": str, "message": str, "reply_to": int},
 )
 async def tg_send_message(args: dict[str, Any]) -> dict[str, Any]:
     """Отправляет текстовое сообщение."""
-    chat = args.get("chat")
+    chat = args.get("chat") or settings.tg_user_id
     message = args.get("message")
     reply_to = args.get("reply_to")
 
-    if not chat or not message:
-        return _error("chat и message обязательны")
+    if not message:
+        return _error("message обязателен")
 
     client = _get_client()
 

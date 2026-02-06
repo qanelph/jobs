@@ -87,7 +87,7 @@ Timezone: {_TZ}
 
 Прямой доступ к Telegram через Telethon:
 
-- `tg_send_message(chat, message)` — отправить сообщение
+- `tg_send_message(chat, message)` — отправить сообщение. Если chat не указан — сообщение уйдёт владельцу. Используй это когда нужно проактивно сообщить что-то важное owner'у.
 - `tg_read_channel(channel, limit)` — прочитать посты канала
 - `tg_read_chat(chat, limit)` — прочитать сообщения чата
 - `tg_search_messages(chat, query, limit)` — поиск по сообщениям

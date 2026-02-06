@@ -36,6 +36,9 @@ RUN mkdir -p /home/browser/.config/chromium \
 # Директория для аудио-записей
 RUN mkdir -p /recordings && chown browser:browser /recordings
 
+# Директория управления (shared volume с jobs)
+RUN mkdir -p /browser-control && chmod 777 /browser-control
+
 # Supervisor config
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 

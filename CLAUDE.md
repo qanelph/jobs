@@ -252,6 +252,21 @@ get_plugin_config()     # Плагины
 get_trigger_manager()   # Триггеры и подписки
 ```
 
+## Telegram команды
+
+| Команда | Доступ | Описание |
+|---------|--------|----------|
+| `/help` | все | Список команд |
+| `/stop` | owner | Прервать текущий запрос |
+| `/clear` | все | Сбросить сессию |
+| `/usage` | owner | Лимиты API |
+| `/update` | owner | Обновиться из git |
+
+## Git workflow
+
+Все изменения идут через PR с squash merge в main.
+Формат коммита: `type: краткое описание` (feat, fix, refactor, security, docs).
+
 ## Запуск
 
 ```bash

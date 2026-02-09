@@ -238,6 +238,17 @@ class TelegramHandlers:
         user_id = sender.id
         is_owner = user_id == settings.tg_user_id
 
+        # /help — список команд
+        if message.text and message.text.strip().lower() == "/help":
+            help_text = (
+                "`/stop` — прервать текущий запрос\n"
+                "`/clear` — сбросить сессию\n"
+                "`/usage` — лимиты API\n"
+                "`/update` — обновиться из git"
+            )
+            await event.reply(help_text)
+            return
+
         # /clear — сброс сессии
         if message.text and message.text.strip().lower() == "/clear":
             session_manager = get_session_manager()

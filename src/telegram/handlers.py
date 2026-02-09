@@ -8,6 +8,7 @@ Telegram Handlers — обработка входящих сообщений.
 
 import asyncio
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -28,6 +29,13 @@ MAX_TG_LENGTH = 4000
 TYPING_REFRESH_INTERVAL = 3.0
 LOADING_EMOJI_ID = 5255778087437617493
 MAX_DONE_LENGTH = 200
+
+_SYSTEM_TAGS_RE = re.compile(r'<\s*/?(?:message-body|sender-meta)\s*/?\s*>', re.IGNORECASE)
+
+
+def _sanitize_tags(text: str) -> str:
+    """Удаляет системные теги из пользовательского ввода."""
+    return _SYSTEM_TAGS_RE.sub('', text)
 
 
 class StatusTracker:
@@ -283,7 +291,7 @@ class TelegramHandlers:
 
         # Обновляем инфо owner'а из реальных данных Telegram
         if is_owner:
-            set_owner_info(user_id, sender.first_name, sender.username)
+            set_owner_info(user_id, sender.first_name, sender.username, getattr(sender, 'phone', None))
         else:
             # Для external users сохраняем в БД
             repo = get_users_repository()
@@ -300,11 +308,11 @@ class TelegramHandlers:
                 logger.info(f"[{user_id}] Banned user, ignoring")
                 return
 
-        # Добавляем метаданные юзера и время к промпту
+        # Добавляем время и оборачиваем в системные теги
         now = datetime.now(tz=settings.get_timezone())
         time_meta = now.strftime("%d.%m.%Y %H:%M")
-        user_meta = self._format_user_meta(sender)
-        prompt = f"[{time_meta}] {user_meta}\n\n{prompt}"
+        prompt = _sanitize_tags(prompt)
+        prompt = f"[{time_meta}]\n<message-body>\n{prompt}\n</message-body>"
 
         input_chat = await event.get_input_chat()
 

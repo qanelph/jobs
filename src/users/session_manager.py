@@ -453,6 +453,7 @@ class SessionManager:
             telegram_id=telegram_id,
             username=user_display_name,
             owner_name=get_owner_display_name(),
+            owner_telegram_id=settings.tg_user_id,
             owner_contact_info=contact_info,
             task_context="",  # task_context добавляется в prompt, не в system_prompt
         )

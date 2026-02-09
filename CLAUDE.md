@@ -260,7 +260,7 @@ get_trigger_manager()   # Триггеры и подписки
 | `/stop` | owner | Прервать текущий запрос |
 | `/clear` | все | Сбросить сессию |
 | `/usage` | owner | Лимиты API |
-| `/update` | owner | Обновиться из git |
+| `/update` | owner | Обновить бота до последней версии |
 
 ## Git workflow
 

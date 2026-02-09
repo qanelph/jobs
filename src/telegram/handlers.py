@@ -244,7 +244,7 @@ class TelegramHandlers:
                 "`/stop` — прервать текущий запрос\n"
                 "`/clear` — сбросить сессию\n"
                 "`/usage` — лимиты API\n"
-                "`/update` — обновиться из git"
+                "`/update` — обновить бота до последней версии"
             )
             await event.reply(help_text)
             return

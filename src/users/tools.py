@@ -4,12 +4,11 @@ MCP Tools — инструменты для работы с пользовате
 Два набора:
 - OWNER_TOOLS — для owner'а (управление пользователями)
 - EXTERNAL_USER_TOOLS — для внешних пользователей (ограниченный доступ)
-
-User ID передаётся в метаданных каждого сообщения: [id: 123 | @username | Name]
 """
 
 import asyncio
 import json
+import re
 from datetime import datetime
 from typing import Any, Callable, Awaitable
 
@@ -54,6 +53,14 @@ def set_task_executor(executor: Callable[..., Awaitable[str | None]]) -> None:
     """Устанавливает TriggerExecutor.execute для запуска background tasks."""
     global _task_executor
     _task_executor = executor
+
+
+_SYSTEM_TAGS_RE = re.compile(r'<\s*/?(?:message-body|sender-meta)\s*/?\s*>', re.IGNORECASE)
+
+
+def _sanitize_tags(text: str) -> str:
+    """Удаляет системные теги из пользовательского ввода."""
+    return _SYSTEM_TAGS_RE.sub('', text)
 
 
 # =============================================================================
@@ -337,7 +344,7 @@ async def unban_user(args: dict[str, Any]) -> dict[str, Any]:
 
 @tool(
     "get_my_tasks",
-    "Get your tasks (regular and conversation). Pass user_id from message metadata [id: XXX].",
+    "Get your tasks (regular and conversation). Use your Telegram ID from the system prompt.",
     {"user_id": int},
 )
 async def get_my_tasks(args: dict[str, Any]) -> dict[str, Any]:
@@ -367,7 +374,7 @@ async def get_my_tasks(args: dict[str, Any]) -> dict[str, Any]:
 
 @tool(
     "update_task",
-    "Update task status or result. Pass user_id from message metadata [id: XXX]. "
+    "Update task status or result. Use your Telegram ID from the system prompt. "
     "Status: pending, in_progress, done, cancelled. result: collected data (e.g. chosen time).",
     {"user_id": int, "task_id": str, "status": str, "result": dict},
 )
@@ -442,19 +449,24 @@ async def update_task(args: dict[str, Any]) -> dict[str, Any]:
         logger.info(f"Launched persistent task session for [{task_id}] with skill={skill}")
     elif _context_sender:
         # Fallback: inject в контекст owner'а + autonomous query
-        parts = [f"{user_name} обновил задачу [{task_id}]"]
+        detail_parts = []
         if status:
-            parts.append(f"Статус: {status}")
+            detail_parts.append(f"Статус: {status}")
         if result:
-            parts.append(f"Результат: {json.dumps(result, ensure_ascii=False)}")
-        await _context_sender(settings.tg_user_id, "\n".join(parts))
+            detail_parts.append(f"Результат: {json.dumps(result, ensure_ascii=False)}")
+        details = "\n".join(detail_parts)
+        message = f"<sender-meta>{user_name} (ID: {user_id}) обновил задачу [{task_id}]</sender-meta>"
+        if details:
+            details = _sanitize_tags(details)
+            message += f"\n<message-body>\n{details}\n</message-body>"
+        await _context_sender(settings.tg_user_id, message)
 
     return _text(f"💎 Обновлена [{task_id}], владелец уведомлён")
 
 
 @tool(
     "send_summary_to_owner",
-    "Send a summary to the bot owner. Pass your user_id from message metadata [id: XXX].",
+    "Send a summary to the bot owner. Use your Telegram ID from the system prompt.",
     {"user_id": int, "summary": str},
 )
 async def send_summary_to_owner(args: dict[str, Any]) -> dict[str, Any]:
@@ -471,7 +483,8 @@ async def send_summary_to_owner(args: dict[str, Any]) -> dict[str, Any]:
     user = await repo.get_user(user_id)
     user_name = user.display_name if user else str(user_id)
 
-    message = f"Сводка от {user_name}:\n\n{summary}"
+    summary = _sanitize_tags(summary)
+    message = f"<sender-meta>Сводка от {user_name} (ID: {user_id})</sender-meta>\n<message-body>\n{summary}\n</message-body>"
 
     if _context_sender:
         await _context_sender(settings.tg_user_id, message)
@@ -483,7 +496,7 @@ async def send_summary_to_owner(args: dict[str, Any]) -> dict[str, Any]:
 
 @tool(
     "ban_violator",
-    "Ban a user for rule violations. Use after warnings. Pass user_id from message metadata [id: XXX].",
+    "Ban a user for rule violations. Use after warnings. Use your Telegram ID from the system prompt.",
     {"user_id": int, "reason": str},
 )
 async def ban_violator(args: dict[str, Any]) -> dict[str, Any]:
@@ -527,12 +540,13 @@ async def ban_violator(args: dict[str, Any]) -> dict[str, Any]:
 
 def _build_task_update_prompt(task: "Task", user_name: str, status: str | None, result: dict | None) -> str:
     """Формирует промпт для persistent task session при обновлении задачи."""
-    parts = [f"Задача [{task.id}] ({task.kind}) обновлена пользователем {user_name}."]
+    parts = [f"<sender-meta>{user_name} обновил задачу [{task.id}] ({task.kind})</sender-meta>"]
     parts.append(f"Тема: {task.title}")
     if status:
         parts.append(f"Новый статус: {status}")
     if result:
-        parts.append(f"Результат: {json.dumps(result, ensure_ascii=False)}")
+        result_str = _sanitize_tags(json.dumps(result, ensure_ascii=False))
+        parts.append(f"Результат: {result_str}")
     if task.context:
         parts.append(f"Контекст задачи: {json.dumps(task.context, ensure_ascii=False)}")
     parts.append("")

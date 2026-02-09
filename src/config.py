@@ -100,17 +100,22 @@ settings = Settings()
 # Runtime: информация о владельце (заполняется при старте из Telethon)
 _owner_display_name: str = "владелец"
 _owner_link: str = ""
+_owner_username: str | None = None
+_owner_phone: str | None = None
 
 
 def set_owner_info(
     telegram_id: int,
     first_name: str | None,
     username: str | None = None,
+    phone: str | None = None,
 ) -> None:
     """Устанавливает информацию о владельце из Telethon."""
-    global _owner_display_name, _owner_link
+    global _owner_display_name, _owner_link, _owner_username, _owner_phone
 
     _owner_display_name = first_name or username or "владелец"
+    _owner_username = username
+    _owner_phone = phone
 
     if username:
         _owner_link = f"t.me/{username}"
@@ -126,3 +131,13 @@ def get_owner_display_name() -> str:
 def get_owner_link() -> str:
     """Возвращает ссылку на владельца (t.me/username)."""
     return _owner_link
+
+
+def get_owner_username() -> str | None:
+    """Возвращает username владельца."""
+    return _owner_username
+
+
+def get_owner_phone() -> str | None:
+    """Возвращает телефон владельца."""
+    return _owner_phone

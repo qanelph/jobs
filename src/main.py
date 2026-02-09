@@ -20,6 +20,7 @@ from src.memory import get_storage
 from src.heartbeat import HeartbeatRunner
 from src.triggers import TriggerExecutor, TriggerManager, set_trigger_manager
 from src.triggers.sources.tg_channel import TelegramChannelTrigger
+from src.updater import Updater, AUTO_CHECK_INTERVAL
 
 
 def setup_logging() -> None:
@@ -116,6 +117,21 @@ async def main() -> None:
     # Регистрируем handlers (интерактивный Telegram — отдельно)
     handlers = TelegramHandlers(client, executor)
     handlers.register()
+    await handlers.on_startup()
+
+    # Автопроверка обновлений
+    async def _auto_check_updates() -> None:
+        updater = Updater()
+        while True:
+            await asyncio.sleep(AUTO_CHECK_INTERVAL)
+            try:
+                text = await updater.check_for_notification()
+                if text:
+                    await client.send_message(settings.tg_user_id, text)
+            except Exception as e:
+                logger.debug(f"Auto update check failed: {e}")
+
+    asyncio.create_task(_auto_check_updates())
 
     logger.info("Bot is running. Send me a message!")
 

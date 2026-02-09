@@ -100,12 +100,37 @@ class TelegramHandlers:
 
     def register(self) -> None:
         """Регистрирует обработчики событий."""
-        # Принимаем сообщения от всех пользователей (не только owner)
         self._client.add_event_handler(
             self._on_message,
             events.NewMessage(incoming=True),
         )
         logger.info(f"Registered handler for all users (owner: {settings.tg_user_id})")
+
+    async def on_startup(self) -> None:
+        """Вызывается после подключения. Проверяет pending update message."""
+        pending = self._updater.load_pending_message()
+        if not pending:
+            return
+        try:
+            current = await self._updater._check()
+            version = current.get("current", "")[:7]
+            await self._client.edit_message(
+                pending["chat_id"],
+                pending["message_id"],
+                f"\u2705 Обновлено ({version})",
+            )
+            logger.info(f"Update confirmed: {version}")
+        except Exception as e:
+            logger.warning(f"Could not edit update message: {e}")
+
+    async def _send_loading(self, event: Any, text: str) -> Any:
+        """Отправляет сообщение с loading-emoji (custom для premium)."""
+        is_premium = await self._check_premium()
+        icon = "\u23f3"
+        entities = None
+        if is_premium:
+            entities = [MessageEntityCustomEmoji(offset=0, length=1, document_id=LOADING_EMOJI_ID)]
+        return await event.reply(f"{icon} {text}", formatting_entities=entities)
 
     async def _send_message(self, user_id: int, text: str) -> None:
         """Отправляет сообщение пользователю (для user tools)."""
@@ -229,7 +254,12 @@ class TelegramHandlers:
         if message.text and message.text.strip().lower() == "/update":
             if not is_owner:
                 return
-            await event.reply(await self._updater.handle())
+            result = await self._updater.handle()
+            if isinstance(result, dict) and result.get("loading"):
+                msg = await self._send_loading(event, "Устанавливаю обновление...")
+                self._updater.save_loading_message(msg.chat_id, msg.id)
+            else:
+                await event.reply(result)
             return
 
         # /usage — показать usage аккаунта (только owner)

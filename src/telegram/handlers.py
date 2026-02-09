@@ -89,6 +89,7 @@ class TelegramHandlers:
         self._client = client
         self._is_premium: bool | None = None  # Lazy-init
         self._updater = Updater()
+        self._reply_targets: dict[int, Any] = {}  # user_id → latest event (для follow-up)
 
         # Настраиваем sender'ы для user tools
         set_telegram_sender(self._send_message)
@@ -294,6 +295,7 @@ class TelegramHandlers:
         # Follow-up цикл в query_stream подхватит это сообщение
         if session._is_querying:
             session.receive_incoming(prompt)
+            self._reply_targets[user_id] = event
             logger.info(f"[{'owner' if is_owner else user_id}] Buffered (session busy), queue: {len(session._incoming)}")
             return
 
@@ -302,6 +304,13 @@ class TelegramHandlers:
 
         try:
             async for text, tool_name, is_final in session.query_stream(prompt):
+                # Перепривязка к новому сообщению при follow-up
+                new_event = self._reply_targets.pop(user_id, None)
+                if new_event:
+                    await status.delete()
+                    event = new_event
+                    status = StatusTracker(event, await self._check_premium())
+
                 now = asyncio.get_event_loop().time()
                 if now - last_typing > TYPING_REFRESH_INTERVAL:
                     await self._set_typing(input_chat, typing=True)

@@ -215,7 +215,7 @@ class HeartbeatRunner:
             # Формируем напоминание
             task_lines = []
             for task in tasks[:3]:  # Максимум 3 задачи в напоминании
-                days = (datetime.now(tz=settings.get_timezone()) - task.deadline).days if task.deadline else 0
+                days = (datetime.now() - task.deadline).days if task.deadline else 0
                 task_lines.append(f"• {task.title[:50]} (просрочено {days} дн.)")
 
             reminder = "Напоминание о просроченных задачах:\n\n" + "\n".join(task_lines)
@@ -242,7 +242,7 @@ class HeartbeatRunner:
         active = await repo.list_tasks(include_done=False)
 
         from datetime import timedelta
-        now = datetime.now(tz=settings.get_timezone())
+        now = datetime.now()
         cutoff = now + timedelta(hours=24)
         upcoming = [t for t in active if t.deadline and not t.is_overdue and t.deadline <= cutoff]
 

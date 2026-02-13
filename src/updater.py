@@ -24,6 +24,7 @@ UPDATE_STATE_FILE = Path("/data/update.json")
 @dataclass
 class Updater:
     _pending_at: float = field(default=0, init=False)
+    _notified_latest: str = field(default="", init=False)
 
     async def handle(self) -> str | dict:
         """
@@ -47,6 +48,7 @@ class Updater:
             return f"\u2705 Последняя версия ({info['current'][:7]})"
 
         self._pending_at = time.monotonic()
+        self._notified_latest = info["latest"]
         lines = [f"- [{c['hash'][:7]}] {c['message']}" for c in info["commits"]]
         return (
             "\U0001f918 Доступно обновление\n\n"
@@ -59,6 +61,9 @@ class Updater:
         info = await self._check()
         if "error" in info or not info["commits"]:
             return None
+        if info["latest"] == self._notified_latest:
+            return None
+        self._notified_latest = info["latest"]
         lines = [f"- [{c['hash'][:7]}] {c['message']}" for c in info["commits"]]
         return (
             "\U0001f918 Доступно обновление\n\n"

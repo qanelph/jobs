@@ -298,6 +298,21 @@ class TelegramHandlers:
         if media_context:
             prompt = f"{media_context}\n\n{prompt}" if prompt else media_context
 
+        # Обработка пересланных сообщений — добавляем метку отправителя
+        if message.forward:
+            prefix = "[Переслано от: скрытый профиль]"
+            try:
+                fwd_sender = await message.forward.get_sender()
+                if fwd_sender:
+                    name = getattr(fwd_sender, 'first_name', '') or ''
+                    last = getattr(fwd_sender, 'last_name', '') or ''
+                    uname = getattr(fwd_sender, 'username', '') or ''
+                    uid = getattr(fwd_sender, 'id', '')
+                    prefix = f"[Переслано от: {name} {last} (@{uname}, ID: {uid})]"
+            except Exception:
+                pass
+            prompt = f"{prefix}\n{prompt}"
+
         logger.info(f"[{'owner' if is_owner else user_id}] Received: {prompt[:100]}...")
 
         # Обновляем инфо owner'а из реальных данных Telegram

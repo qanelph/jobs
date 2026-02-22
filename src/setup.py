@@ -184,9 +184,12 @@ async def _setup_telegram() -> bool:
         return False
 
 
-async def run_setup() -> bool:
+async def run_setup(force: bool = False) -> bool:
     """
     Запускает полный setup flow.
+
+    Args:
+        force: принудительный запуск (--setup), всегда показывает меню транспортов.
 
     Returns:
         True если настройка успешна.
@@ -203,7 +206,11 @@ async def run_setup() -> bool:
     print("Шаг 1/2: Telegram")
     print("-" * 30)
 
-    if is_telegram_configured():
+    if force:
+        # --setup: всегда показываем меню транспортов
+        if not await _setup_telegram():
+            return False
+    elif is_telegram_configured():
         # Проверяем Telethon сессию если есть
         session = load_session_string()
         if session:

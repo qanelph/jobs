@@ -52,7 +52,7 @@ async def main() -> None:
     force_setup = "--setup" in sys.argv
     if force_setup:
         logger.info("Принудительный setup (--setup)")
-        if not await run_setup():
+        if not await run_setup(force=True):
             logger.error("Setup не завершён")
             sys.exit(1)
 

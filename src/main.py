@@ -48,6 +48,14 @@ def _has_telethon_session() -> bool:
 async def main() -> None:
     """Точка входа."""
     setup_logging()
+
+    force_setup = "--setup" in sys.argv
+    if force_setup:
+        logger.info("Принудительный setup (--setup)")
+        if not await run_setup():
+            logger.error("Setup не завершён")
+            sys.exit(1)
+
     logger.info("Starting Jobs - Personal AI Assistant")
 
     # Инициализируем память (создаёт структуру файлов)

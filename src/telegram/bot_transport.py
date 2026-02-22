@@ -46,30 +46,46 @@ class BotTransport:
         await self._bot.session.close()
 
     async def send_message(self, chat_id: int, text: str) -> int:
-        result = await self._bot.send_message(chat_id, text)
+        try:
+            result = await self._bot.send_message(chat_id, text, parse_mode="Markdown")
+        except Exception:
+            result = await self._bot.send_message(chat_id, text)
         return result.message_id
 
     async def reply(self, msg: IncomingMessage, text: str) -> int:
-        result = await self._bot.send_message(
-            msg.chat_id,
-            text,
-            reply_to_message_id=msg.message_id,
-        )
+        try:
+            result = await self._bot.send_message(
+                msg.chat_id,
+                text,
+                reply_to_message_id=msg.message_id,
+                parse_mode="Markdown",
+            )
+        except Exception:
+            result = await self._bot.send_message(
+                msg.chat_id,
+                text,
+                reply_to_message_id=msg.message_id,
+            )
         return result.message_id
 
     async def reply_with_entities(
         self, msg: IncomingMessage, text: str, entities: list | None,
     ) -> int:
-        # Bot API не поддерживает custom emoji entities напрямую — отправляем без них
+        # Bot API не поддерживает custom emoji entities — отправляем как обычно
         return await self.reply(msg, text)
 
     async def edit_message(
         self, chat_id: int, msg_id: int, text: str, entities: list | None = None,
     ) -> None:
         try:
-            await self._bot.edit_message_text(text, chat_id=chat_id, message_id=msg_id)
-        except Exception as e:
-            logger.debug(f"Edit message error: {e}")
+            await self._bot.edit_message_text(
+                text, chat_id=chat_id, message_id=msg_id, parse_mode="Markdown",
+            )
+        except Exception:
+            try:
+                await self._bot.edit_message_text(text, chat_id=chat_id, message_id=msg_id)
+            except Exception as e:
+                logger.debug(f"Edit message error: {e}")
 
     async def delete_message(self, chat_id: int, msg_id: int) -> None:
         try:

@@ -12,7 +12,8 @@ from loguru import logger
 from src.config import settings, set_owner_info
 from src.telegram.client import create_client, load_session_string
 from src.telegram.handlers import TelegramHandlers
-from src.telegram.tools import set_telegram_client
+from src.telegram.tools import set_transports
+from src.telegram.transport import Transport
 from src.setup import run_setup, is_telegram_configured, is_claude_configured
 from src.tools.scheduler import SchedulerRunner
 from src.users import get_session_manager
@@ -33,6 +34,17 @@ def setup_logging() -> None:
     )
 
 
+def _has_telethon_config() -> bool:
+    """Проверяет наличие Telethon конфигурации."""
+    return bool(settings.tg_api_id and settings.tg_api_hash)
+
+
+def _has_telethon_session() -> bool:
+    """Проверяет наличие Telethon сессии."""
+    session = load_session_string()
+    return session is not None and len(session) > 0
+
+
 async def main() -> None:
     """Точка входа."""
     setup_logging()
@@ -49,49 +61,81 @@ async def main() -> None:
             logger.error("Setup не завершён")
             sys.exit(1)
 
-    # Создаём клиент
-    session_string = load_session_string()
-    client = create_client(session_string)
-    set_telegram_client(client)  # Для Telegram tools
+    transports: list[Transport] = []
+    telethon_transport = None
+    telethon_client = None
 
-    try:
-        await client.connect()
+    # Telethon (если настроен и есть сессия)
+    if _has_telethon_config() and _has_telethon_session():
+        from src.telegram.telethon_transport import TelethonTransport
 
-        if not await client.is_user_authorized():
-            logger.error("Telegram сессия невалидна. Удалите data/telethon.session")
-            sys.exit(1)
+        session_string = load_session_string()
+        client = create_client(session_string)
+        telethon_transport = TelethonTransport(client)
+        telethon_client = client
 
-        me = await client.get_me()
-        logger.info(f"Logged in as {me.first_name} (ID: {me.id})")
-
-        # Загружаем диалоги в кэш и получаем инфо о owner'е
-        await client.get_dialogs()
         try:
-            owner = await client.get_entity(settings.tg_user_id)
-            set_owner_info(
-                telegram_id=settings.tg_user_id,
-                first_name=owner.first_name,
-                username=owner.username,
-            )
-            logger.info(f"Owner: {owner.first_name} @{owner.username} (ID: {settings.tg_user_id})")
+            await client.connect()
+
+            if not await client.is_user_authorized():
+                logger.error("Telegram Telethon сессия невалидна. Удалите data/telethon.session")
+                sys.exit(1)
+
+            me = await client.get_me()
+            logger.info(f"Telethon: logged in as {me.first_name} (ID: {me.id})")
+
+            # Загружаем диалоги в кэш и получаем инфо о owner'е
+            await client.get_dialogs()
+            try:
+                owner = await client.get_entity(settings.tg_user_id)
+                set_owner_info(
+                    telegram_id=settings.tg_user_id,
+                    first_name=owner.first_name,
+                    username=owner.username,
+                )
+                logger.info(f"Owner: {owner.first_name} @{owner.username} (ID: {settings.tg_user_id})")
+            except Exception as e:
+                logger.warning(f"Could not get owner info: {e}. Write to bot first.")
+                set_owner_info(settings.tg_user_id, None, None)
+
+            if me.id != settings.tg_user_id:
+                logger.warning(f"Logged user {me.id} != TG_USER_ID {settings.tg_user_id}")
+
+            transports.append(telethon_transport)
+
         except Exception as e:
-            logger.warning(f"Could not get owner info: {e}. Write to bot first.")
-            set_owner_info(settings.tg_user_id, None, None)
+            logger.error(f"Telethon connection error: {e}")
+            raise
 
-        if me.id != settings.tg_user_id:
-            logger.warning(f"Logged user {me.id} != TG_USER_ID {settings.tg_user_id}")
+    # Bot (если настроен)
+    if settings.tg_bot_token:
+        from src.telegram.bot_transport import BotTransport
 
-    except Exception as e:
-        logger.error(f"Connection error: {e}")
-        raise
+        bot_transport = BotTransport(settings.tg_bot_token)
+        await bot_transport.start()
+        transports.append(bot_transport)
+
+        me = await bot_transport.get_me()
+        logger.info(f"Bot: @{me['username']} (ID: {me['id']})")
+
+    if not transports:
+        logger.error("Ни Telethon, ни Bot не настроены")
+        sys.exit(1)
+
+    # Primary transport: Telethon preferred, Bot fallback
+    primary = transports[0]
+
+    # Tools
+    set_transports(primary, telethon_client)
 
     # Unified Trigger System
     session_manager = get_session_manager()
-    executor = TriggerExecutor(client, session_manager)
-    trigger_manager = TriggerManager(executor, client, str(settings.db_path))
+    executor = TriggerExecutor(primary, session_manager)
+    trigger_manager = TriggerManager(executor, primary, str(settings.db_path))
 
-    # Регистрируем типы динамических триггеров
-    trigger_manager.register_type("tg_channel", TelegramChannelTrigger)
+    # Регистрируем типы динамических триггеров (только если Telethon)
+    if telethon_transport:
+        trigger_manager.register_type("tg_channel", TelegramChannelTrigger)
 
     # Регистрируем встроенные
     scheduler = SchedulerRunner(executor=executor)
@@ -100,7 +144,7 @@ async def main() -> None:
     if settings.heartbeat_interval_minutes > 0:
         heartbeat = HeartbeatRunner(
             executor=executor,
-            client=client,
+            transport=primary,
             session_manager=session_manager,
             interval_minutes=settings.heartbeat_interval_minutes,
         )
@@ -114,9 +158,10 @@ async def main() -> None:
     # Запуск (builtins + загрузка подписок из DB)
     await trigger_manager.start_all()
 
-    # Регистрируем handlers (интерактивный Telegram — отдельно)
-    handlers = TelegramHandlers(client, executor)
-    handlers.register()
+    # Регистрируем handlers — один экземпляр, регистрируем на все транспорты
+    handlers = TelegramHandlers(primary, executor)
+    for t in transports:
+        handlers.register(t)
     await handlers.on_startup()
 
     # Автопроверка обновлений
@@ -127,16 +172,18 @@ async def main() -> None:
             try:
                 text = await updater.check_for_notification()
                 if text:
-                    await client.send_message(settings.tg_user_id, text)
+                    await primary.send_message(settings.tg_user_id, text)
             except Exception as e:
                 logger.debug(f"Auto update check failed: {e}")
 
     asyncio.create_task(_auto_check_updates())
 
-    logger.info("Bot is running. Send me a message!")
+    logger.info(f"Bot is running ({len(transports)} transport(s)). Send me a message!")
 
+    # Run transport loops параллельно
+    tasks = [asyncio.create_task(t.run_forever()) for t in transports]
     try:
-        await client.run_until_disconnected()
+        await asyncio.gather(*tasks)
     finally:
         await trigger_manager.stop_all()
 

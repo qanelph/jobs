@@ -4,6 +4,8 @@ Telegram Handlers — обработка входящих сообщений.
 Поддерживает multi-session архитектуру:
 - Owner (tg_user_id) — полный доступ
 - External users — ограниченный доступ с отдельными сессиями
+
+Работает с любым Transport (Telethon / Bot).
 """
 
 import asyncio
@@ -13,9 +15,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 import aiohttp
-from telethon import TelegramClient, events
-from telethon.tl.functions.messages import SetTypingRequest
-from telethon.tl.types import SendMessageTypingAction, SendMessageCancelAction, MessageEntityCustomEmoji
 from loguru import logger
 
 from src.config import settings, set_owner_info
@@ -24,6 +23,7 @@ from src.users.tools import set_telegram_sender, set_context_sender, set_buffer_
 from src.triggers.executor import TriggerExecutor
 from src.media import transcribe_audio, save_media, MAX_MEDIA_SIZE
 from src.updater import Updater
+from src.telegram.transport import Transport, TransportMode, IncomingMessage
 
 MAX_TG_LENGTH = 4000
 TYPING_REFRESH_INTERVAL = 3.0
@@ -41,10 +41,11 @@ def _sanitize_tags(text: str) -> str:
 class StatusTracker:
     """Управляет статусным сообщением с двумя слотами: active (тул) и done (результат)."""
 
-    def __init__(self, event: Any, is_premium: bool) -> None:
-        self._event = event
+    def __init__(self, transport: Transport, msg: IncomingMessage, is_premium: bool) -> None:
+        self._transport = transport
+        self._msg = msg
         self._is_premium = is_premium
-        self._msg: Any | None = None
+        self._status_msg_id: int | None = None
         self._active: str | None = None
         self._done: str | None = None
 
@@ -61,31 +62,36 @@ class StatusTracker:
 
     async def delete(self) -> None:
         """Удаляет статусное сообщение."""
-        if self._msg:
+        if self._status_msg_id:
             try:
-                await self._msg.delete()
+                await self._transport.delete_message(self._msg.chat_id, self._status_msg_id)
             except Exception:
                 pass
-            self._msg = None
+            self._status_msg_id = None
 
     async def _update(self) -> None:
         text, entities = self._render()
-        if self._msg is None:
-            self._msg = await self._event.reply(text, formatting_entities=entities)
+        if self._status_msg_id is None:
+            self._status_msg_id = await self._transport.reply_with_entities(
+                self._msg, text, entities,
+            )
         else:
             try:
-                await self._msg.edit(text, formatting_entities=entities)
+                await self._transport.edit_message(
+                    self._msg.chat_id, self._status_msg_id, text, entities,
+                )
             except Exception:
                 pass
 
     def _render(self) -> tuple[str, list | None]:
-        icon = "⏳" if self._is_premium else "🪛"
+        icon = "\u23f3" if self._is_premium else "\U0001fa9b"
         text = f"{icon} {self._active}"
         if self._done:
-            text += f"\n\n☑️ {self._done}"
+            text += f"\n\n\u2611\ufe0f {self._done}"
 
         entities = None
-        if self._is_premium:
+        if self._is_premium and self._transport.mode == TransportMode.TELETHON:
+            from telethon.tl.types import MessageEntityCustomEmoji
             entities = [MessageEntityCustomEmoji(offset=0, length=1, document_id=LOADING_EMOJI_ID)]
         return text, entities
 
@@ -93,11 +99,11 @@ class StatusTracker:
 class TelegramHandlers:
     """Обработчики сообщений Telegram."""
 
-    def __init__(self, client: TelegramClient, executor: TriggerExecutor | None = None) -> None:
-        self._client = client
-        self._is_premium: bool | None = None  # Lazy-init
+    def __init__(self, primary_transport: Transport, executor: TriggerExecutor | None = None) -> None:
+        self._primary = primary_transport
+        self._is_premium: dict[TransportMode, bool] = {}
         self._updater = Updater()
-        self._reply_targets: dict[int, Any] = {}  # user_id → latest event (для follow-up)
+        self._reply_targets: dict[int, IncomingMessage] = {}  # user_id → latest msg (для follow-up)
 
         # Настраиваем sender'ы для user tools
         set_telegram_sender(self._send_message)
@@ -106,13 +112,10 @@ class TelegramHandlers:
         if executor:
             set_task_executor(executor.execute)
 
-    def register(self) -> None:
-        """Регистрирует обработчики событий."""
-        self._client.add_event_handler(
-            self._on_message,
-            events.NewMessage(incoming=True),
-        )
-        logger.info(f"Registered handler for all users (owner: {settings.tg_user_id})")
+    def register(self, transport: Transport) -> None:
+        """Регистрирует обработчики на транспорт. Можно вызывать для нескольких."""
+        transport.on_message(self._on_message)
+        logger.info(f"Registered handler on {transport.mode.value} (owner: {settings.tg_user_id})")
 
     async def on_startup(self) -> None:
         """Вызывается после подключения. Проверяет pending update message."""
@@ -122,7 +125,7 @@ class TelegramHandlers:
         try:
             current = await self._updater._check()
             version = current.get("current", "")[:7]
-            await self._client.edit_message(
+            await self._primary.edit_message(
                 pending["chat_id"],
                 pending["message_id"],
                 f"\u2705 Обновлено ({version})",
@@ -131,19 +134,20 @@ class TelegramHandlers:
         except Exception as e:
             logger.warning(f"Could not edit update message: {e}")
 
-    async def _send_loading(self, event: Any, text: str) -> Any:
-        """Отправляет сообщение с loading-emoji (custom для premium)."""
-        is_premium = await self._check_premium()
+    async def _send_loading(self, msg: IncomingMessage, text: str) -> int:
+        """Отправляет сообщение с loading-emoji (custom для premium Telethon)."""
+        is_premium = await self._check_premium(msg.transport)
         icon = "\u23f3"
         entities = None
-        if is_premium:
+        if is_premium and msg.transport.mode == TransportMode.TELETHON:
+            from telethon.tl.types import MessageEntityCustomEmoji
             entities = [MessageEntityCustomEmoji(offset=0, length=1, document_id=LOADING_EMOJI_ID)]
-        return await event.reply(f"{icon} {text}", formatting_entities=entities)
+        return await msg.transport.reply_with_entities(msg, f"{icon} {text}", entities)
 
     async def _send_message(self, user_id: int, text: str) -> None:
         """Отправляет сообщение пользователю (для user tools)."""
         logger.info(f"_send_message: user_id={user_id}, text={text[:60]}...")
-        await self._client.send_message(user_id, text)
+        await self._primary.send_message(user_id, text)
 
         session_manager = get_session_manager()
 
@@ -179,31 +183,21 @@ class TelegramHandlers:
         logger.info(f"Buffered to context [{user_id}], buffer: {len(recipient._incoming)}")
 
     async def _process_incoming(self, user_id: int) -> None:
-        """
-        Автономный query для обработки входящих сообщений.
-
-        Защита от race condition:
-        - Атомарно забираем буфер ДО query
-        - Включаем сообщения явно в prompt
-        - session.query() вызовет _consume_incoming(), но буфер уже пуст
-        """
+        """Автономный query для обработки входящих сообщений."""
         logger.info(f"_process_incoming started for [{user_id}]")
         try:
             session_manager = get_session_manager()
             session = session_manager.get_session(user_id)
 
-            # Атомарно забираем буфер — защита от race condition
             if not session._incoming:
                 logger.warning(f"_process_incoming: buffer empty for [{user_id}]")
                 return
 
-            # Копируем и очищаем буфер ДО query (включая файл)
             messages = session._incoming.copy()
             session._incoming.clear()
             session._clear_incoming_file()
             logger.info(f"_process_incoming: captured {len(messages)} messages")
 
-            # Формируем prompt с сообщениями явно
             incoming_text = "\n".join(["[Входящие сообщения:]"] + messages + ["[Конец входящих]"])
             prompt = (
                 f"{incoming_text}\n\n"
@@ -217,104 +211,98 @@ class TelegramHandlers:
 
             if response and response != "Нет ответа":
                 logger.info(f"Owner autonomous response: {response[:80]}...")
-                await self._client.send_message(user_id, response[:MAX_TG_LENGTH])
+                await self._primary.send_message(user_id, response[:MAX_TG_LENGTH])
             else:
                 logger.info("Owner autonomous query: no actionable response")
         except Exception as e:
             logger.error(f"Incoming processing error [{user_id}]: {e}")
 
-    async def _on_message(self, event: events.NewMessage.Event) -> None:
+    async def _on_message(self, msg: IncomingMessage) -> None:
         """Обрабатывает входящее сообщение (только private chats)."""
         # Пропускаем каналы и группы — ими занимаются trigger subscriptions
-        if event.is_channel or event.is_group:
+        if msg.is_channel or msg.is_group:
             return
 
-        message = event.message
-        sender = await event.get_sender()
-
-        if not sender:
+        if not msg.sender_id:
             return
 
-        user_id = sender.id
+        user_id = msg.sender_id
         is_owner = user_id == settings.tg_user_id
+        transport = msg.transport
 
         # /help — список команд
-        if message.text and message.text.strip().lower() == "/help":
+        if msg.text and msg.text.strip().lower() == "/help":
             help_text = (
                 "`/stop` — прервать текущий запрос\n"
                 "`/clear` — сбросить сессию\n"
                 "`/usage` — лимиты API\n"
                 "`/update` — обновить бота до последней версии"
             )
-            await event.reply(help_text)
+            await transport.reply(msg, help_text)
             return
 
         # /clear — сброс сессии
-        if message.text and message.text.strip().lower() == "/clear":
+        if msg.text and msg.text.strip().lower() == "/clear":
             session_manager = get_session_manager()
             await session_manager.reset_session(user_id)
-            await event.reply("Сессия сброшена.")
+            await transport.reply(msg, "Сессия сброшена.")
             return
 
-        # /stop — прервать текущий запрос (сессия сохраняется)
-        if message.text and message.text.strip().lower() == "/stop":
+        # /stop — прервать текущий запрос
+        if msg.text and msg.text.strip().lower() == "/stop":
             if not is_owner:
                 return
             session_manager = get_session_manager()
             session = session_manager.get_session(user_id)
             if session._is_querying and session._client:
                 await session._client.interrupt()
-                await event.reply("Остановлено.")
+                await transport.reply(msg, "Остановлено.")
             else:
-                await event.reply("Нечего останавливать.")
+                await transport.reply(msg, "Нечего останавливать.")
             return
 
         # /update — обновление из git (только owner)
-        if message.text and message.text.strip().lower() == "/update":
+        if msg.text and msg.text.strip().lower() == "/update":
             if not is_owner:
                 return
             result = await self._updater.handle()
             if isinstance(result, dict) and result.get("loading"):
-                msg = await self._send_loading(event, "Устанавливаю обновление...")
-                self._updater.save_loading_message(msg.chat_id, msg.id)
+                status_id = await self._send_loading(msg, "Устанавливаю обновление...")
+                self._updater.save_loading_message(msg.chat_id, status_id)
             else:
-                await event.reply(result)
+                await transport.reply(msg, result)
             return
 
         # /usage — показать usage аккаунта (только owner)
-        if message.text and message.text.strip().lower() == "/usage":
+        if msg.text and msg.text.strip().lower() == "/usage":
             if not is_owner:
                 return
-            await event.reply(await self._fetch_usage())
+            await transport.reply(msg, await self._fetch_usage())
             return
 
         # Обработка разных типов сообщений
-        prompt, media_context = await self._extract_content(message)
+        prompt, media_context = await self._extract_content(msg)
 
         if not prompt and not media_context:
             return
 
-        # Если есть медиа-контекст — добавляем к промпту
         if media_context:
             prompt = f"{media_context}\n\n{prompt}" if prompt else media_context
 
         logger.info(f"[{'owner' if is_owner else user_id}] Received: {prompt[:100]}...")
 
-        # Обновляем инфо owner'а из реальных данных Telegram
+        # Обновляем инфо owner'а
         if is_owner:
-            set_owner_info(user_id, sender.first_name, sender.username, getattr(sender, 'phone', None))
+            set_owner_info(user_id, msg.sender_first_name, msg.sender_username, msg.sender_phone)
         else:
-            # Для external users сохраняем в БД
             repo = get_users_repository()
             await repo.upsert_user(
                 telegram_id=user_id,
-                username=sender.username,
-                first_name=sender.first_name,
-                last_name=sender.last_name,
-                phone=sender.phone if hasattr(sender, 'phone') else None,
+                username=msg.sender_username,
+                first_name=msg.sender_first_name,
+                last_name=msg.sender_last_name,
+                phone=msg.sender_phone,
             )
-
-            # Проверяем бан
             if await repo.is_user_banned(user_id):
                 logger.info(f"[{user_id}] Banned user, ignoring")
                 return
@@ -325,45 +313,40 @@ class TelegramHandlers:
         prompt = _sanitize_tags(prompt)
         prompt = f"[{time_meta}]\n<message-body>\n{prompt}\n</message-body>"
 
-        input_chat = await event.get_input_chat()
-
         # Отмечаем как прочитанное
-        await self._client.send_read_acknowledge(input_chat, message)
+        await transport.mark_read(msg.chat_id, msg.message_id)
 
         # Включаем typing
-        await self._set_typing(input_chat, typing=True)
+        await transport.set_typing(msg.chat_id, typing=True)
 
         # Получаем сессию для этого пользователя
         session_manager = get_session_manager()
-        user_display_name = sender.first_name or sender.username or str(user_id)
+        user_display_name = msg.sender_first_name or msg.sender_username or str(user_id)
         session = session_manager.get_session(user_id, user_display_name)
 
-        # Skills подхватываются автоматически через SDK (setting_sources=["project"])
-
         # Если сессия уже обрабатывает запрос — буферизуем в incoming
-        # Follow-up цикл в query_stream подхватит это сообщение
         if session._is_querying:
             session.receive_incoming(prompt)
-            self._reply_targets[user_id] = event
+            self._reply_targets[user_id] = msg
             logger.info(f"[{'owner' if is_owner else user_id}] Buffered (session busy), queue: {len(session._incoming)}")
             return
 
         last_typing = asyncio.get_event_loop().time()
-        status = StatusTracker(event, await self._check_premium())
+        status = StatusTracker(transport, msg, await self._check_premium(transport))
 
         try:
             async for text, tool_name, is_final in session.query_stream(prompt):
                 # Перепривязка к новому сообщению при follow-up
-                new_event = self._reply_targets.pop(user_id, None)
-                if new_event:
+                new_msg = self._reply_targets.pop(user_id, None)
+                if new_msg:
                     await status.delete()
-                    event = new_event
-                    status = StatusTracker(event, await self._check_premium())
+                    msg = new_msg
+                    status = StatusTracker(new_msg.transport, new_msg, await self._check_premium(new_msg.transport))
 
-                now = asyncio.get_event_loop().time()
-                if now - last_typing > TYPING_REFRESH_INTERVAL:
-                    await self._set_typing(input_chat, typing=True)
-                    last_typing = now
+                now_time = asyncio.get_event_loop().time()
+                if now_time - last_typing > TYPING_REFRESH_INTERVAL:
+                    await transport.set_typing(msg.chat_id, typing=True)
+                    last_typing = now_time
 
                 if tool_name:
                     await status.set_active(self._format_tool(tool_name))
@@ -375,34 +358,27 @@ class TelegramHandlers:
                     final_text = text.strip()
                     if final_text:
                         await status.delete()
-                        await event.reply(final_text)
+                        await transport.reply(msg, final_text)
 
         except Exception as e:
             logger.error(f"Error: {e}")
             await status.delete()
-            await event.reply(f"Ошибка: {e}")
+            await transport.reply(msg, f"Ошибка: {e}")
 
         finally:
-            await self._set_typing(input_chat, typing=False)
+            await transport.set_typing(msg.chat_id, typing=False)
             await status.delete()
 
-    async def _set_typing(self, chat: Any, typing: bool) -> None:
-        """Устанавливает статус typing."""
-        try:
-            action = SendMessageTypingAction() if typing else SendMessageCancelAction()
-            await self._client(SetTypingRequest(peer=chat, action=action))
-        except Exception as e:
-            logger.debug(f"Typing status error: {e}")
-
-    async def _check_premium(self) -> bool:
-        """Проверяет наличие premium у аккаунта (с кешированием)."""
-        if self._is_premium is None:
+    async def _check_premium(self, transport: Transport) -> bool:
+        """Проверяет наличие premium у аккаунта (с кешированием per-transport)."""
+        mode = transport.mode
+        if mode not in self._is_premium:
             try:
-                me = await self._client.get_me()
-                self._is_premium = bool(getattr(me, "premium", False))
+                me = await transport.get_me()
+                self._is_premium[mode] = bool(me.get("is_premium", False))
             except Exception:
-                self._is_premium = False
-        return self._is_premium
+                self._is_premium[mode] = False
+        return self._is_premium[mode]
 
     async def _fetch_usage(self) -> str:
         """Запрашивает usage аккаунта через OAuth API."""
@@ -477,25 +453,7 @@ class TelegramHandlers:
     @staticmethod
     def _usage_bar(pct: float) -> str:
         filled = round(pct / 100 * 5)
-        return "▓" * filled + "░" * (5 - filled)
-
-    def _format_user_meta(self, sender: Any) -> str:
-        """Форматирует метаданные пользователя для добавления к промпту."""
-        parts = [f"id: {sender.id}"]
-
-        if sender.username:
-            parts.append(f"@{sender.username}")
-
-        name = sender.first_name or ""
-        if sender.last_name:
-            name = f"{name} {sender.last_name}".strip()
-        if name:
-            parts.append(name)
-
-        if hasattr(sender, 'phone') and sender.phone:
-            parts.append(f"tel: {sender.phone}")
-
-        return f"[{' | '.join(parts)}]"
+        return "\u2593" * filled + "\u2591" * (5 - filled)
 
     def _format_tool(self, tool_name: str) -> str:
         """Форматирует название тула в читаемый текст."""
@@ -596,56 +554,52 @@ class TelegramHandlers:
 
         return tools_display.get(clean_name, "Работаю...")
 
-    async def _extract_content(self, message: Any) -> tuple[str, str | None]:
+    async def _extract_content(self, msg: IncomingMessage) -> tuple[str, str | None]:
         """
         Извлекает контент из сообщения.
 
         Returns:
             (text, media_context) — текст и контекст медиа (путь к файлу или транскрипция)
         """
-        text = message.text or ""
+        text = msg.text or ""
         media_context = None
+        transport = msg.transport
 
         # Голосовое сообщение
-        if message.voice:
+        if msg.has_voice:
             try:
-                voice_data = await self._client.download_media(message.voice, bytes)
-                result = await transcribe_audio(voice_data)
-                media_context = f"[Голосовое сообщение]: {result.text}"
-                logger.info(f"Voice transcribed: {result.text[:50]}...")
+                voice_data = await transport.download_media(msg)
+                if voice_data:
+                    result = await transcribe_audio(voice_data)
+                    media_context = f"[Голосовое сообщение]: {result.text}"
+                    logger.info(f"Voice transcribed: {result.text[:50]}...")
             except Exception as e:
                 logger.error(f"Voice transcription failed: {e}")
                 media_context = f"[Голосовое сообщение — ошибка транскрипции: {e}]"
 
         # Фото
-        elif message.photo:
+        elif msg.has_photo:
             try:
-                photo_data = await self._client.download_media(message.photo, bytes)
-                path = await save_media(photo_data, "photo.jpg", subfolder="photos")
-                media_context = f"[Фото сохранено: {path}]"
+                photo_data = await transport.download_media(msg)
+                if photo_data:
+                    path = await save_media(photo_data, "photo.jpg", subfolder="photos")
+                    media_context = f"[Фото сохранено: {path}]"
             except Exception as e:
                 logger.error(f"Photo save failed: {e}")
 
-        # Документ (включая видео, аудио файлы)
-        elif message.document:
+        # Документ
+        elif msg.has_document:
             try:
-                doc = message.document
-                if doc.size and doc.size > MAX_MEDIA_SIZE:
-                    size_mb = doc.size // 1024 // 1024
+                if msg.document_size and msg.document_size > MAX_MEDIA_SIZE:
+                    size_mb = msg.document_size // 1024 // 1024
                     media_context = f"[Файл слишком большой: {size_mb} MB, макс {MAX_MEDIA_SIZE // 1024 // 1024} MB]"
                 else:
-                    # Получаем имя файла из атрибутов
-                    filename = "document"
-                    for attr in doc.attributes:
-                        if hasattr(attr, "file_name"):
-                            filename = attr.file_name
-                            break
-
-                    doc_data = await self._client.download_media(doc, bytes)
-                    path = await save_media(doc_data, filename, subfolder="documents")
-                    media_context = f"[Файл сохранён: {path}]"
+                    filename = msg.document_name or "document"
+                    doc_data = await transport.download_media(msg)
+                    if doc_data:
+                        path = await save_media(doc_data, filename, subfolder="documents")
+                        media_context = f"[Файл сохранён: {path}]"
             except Exception as e:
                 logger.error(f"Document save failed: {e}")
 
         return text, media_context
-

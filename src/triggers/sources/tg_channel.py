@@ -1,28 +1,44 @@
 """
 TelegramChannelTrigger — триггер на новые посты в Telegram канале/группе.
+
+Требует Telethon-транспорт (Bot API не поддерживает подписку на каналы).
 """
 
-from telethon import TelegramClient, events
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from telethon import events
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import Channel
 from loguru import logger
 
+from src.telegram.transport import TransportMode
 from src.triggers.executor import TriggerExecutor
 from src.triggers.models import TriggerEvent
 
+if TYPE_CHECKING:
+    from src.telegram.transport import Transport
+    from src.telegram.telethon_transport import TelethonTransport
+
 
 class TelegramChannelTrigger:
-    """Триггер на новые посты в Telegram канале/группе."""
+    """Триггер на новые посты в Telegram канале/группе (Telethon only)."""
 
     def __init__(
         self,
         executor: TriggerExecutor,
-        client: TelegramClient,
+        transport: "Transport",
         config: dict,
         prompt: str,
     ) -> None:
+        if transport.mode != TransportMode.TELETHON:
+            raise ValueError("TelegramChannelTrigger требует Telethon-транспорт")
+
         self._executor = executor
-        self._client = client
+        # Получаем Telethon-клиент из transport
+        telethon_transport: TelethonTransport = transport  # type: ignore[assignment]
+        self._client = telethon_transport.client
         self._channel: str = config["channel"]
         self._prompt = prompt
         self._handler = None

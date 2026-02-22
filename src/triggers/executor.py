@@ -15,11 +15,15 @@ from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
-from telethon import TelegramClient
 
 from src.config import settings
 from src.triggers.models import TriggerEvent
 from src.users.session_manager import SessionManager
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.telegram.transport import Transport
 
 
 MAX_MESSAGE_LENGTH = 4000
@@ -29,8 +33,8 @@ TRANSCRIPTS_DIR = Path(settings.data_dir) / "task_transcripts"
 class TriggerExecutor:
     """Выполняет TriggerEvent: query → deliver."""
 
-    def __init__(self, client: TelegramClient, session_manager: SessionManager) -> None:
-        self._client = client
+    def __init__(self, transport: "Transport", session_manager: SessionManager) -> None:
+        self._transport = transport
         self._session_manager = session_manager
 
     async def execute(self, event: TriggerEvent) -> str | None:
@@ -103,7 +107,7 @@ class TriggerExecutor:
             text: текст сообщения
             buffer: буферизовать в owner session (для сохранения контекста)
         """
-        await self._client.send_message(settings.tg_user_id, text)
+        await self._transport.send_message(settings.tg_user_id, text)
 
         # Буферизуем в owner session чтобы сохранить контекст
         if buffer:

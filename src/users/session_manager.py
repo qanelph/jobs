@@ -170,8 +170,8 @@ class UserSession:
         if self._allowed_tools_override is not None:
             allowed_tools = self._allowed_tools_override
         else:
-            from src.tools import OWNER_ALLOWED_TOOLS, EXTERNAL_ALLOWED_TOOLS
-            allowed_tools = OWNER_ALLOWED_TOOLS if self.is_owner else EXTERNAL_ALLOWED_TOOLS
+            from src.tools import get_owner_allowed_tools, EXTERNAL_ALLOWED_TOOLS
+            allowed_tools = get_owner_allowed_tools() if self.is_owner else EXTERNAL_ALLOWED_TOOLS
 
         permission_mode = "bypassPermissions" if self.is_owner else "default"
 

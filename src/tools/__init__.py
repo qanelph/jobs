@@ -20,7 +20,7 @@ from src.users.tools import (
     EXTERNAL_USER_TOOL_NAMES,
 )
 
-from src.telegram.tools import TELEGRAM_TOOLS, TELEGRAM_TOOL_NAMES
+from src.telegram.tools import TELEGRAM_TOOLS, TELEGRAM_TOOL_NAMES, get_available_telegram_tool_names
 from src.triggers.tools import TRIGGER_TOOLS, TRIGGER_TOOL_NAMES
 
 
@@ -71,7 +71,7 @@ BROWSER_TOOL_NAMES = [
 # Allowed tools по ролям
 # =============================================================================
 
-# Owner — полный доступ
+# Owner — полный доступ (статический, для обратной совместимости)
 OWNER_ALLOWED_TOOLS = [
     # Scheduler
     "mcp__jobs__schedule_task",
@@ -95,6 +95,33 @@ OWNER_ALLOWED_TOOLS = [
     # Skills (SDK native support via setting_sources=["project"])
     "Skill",
 ]
+
+
+def get_owner_allowed_tools() -> list[str]:
+    """Динамический список owner tools (фильтрует Telegram tools по доступности)."""
+    return [
+        # Scheduler
+        "mcp__jobs__schedule_task",
+        "mcp__jobs__cancel_task",
+        # Triggers
+        *TRIGGER_TOOL_NAMES,
+        # Memory
+        *MEMORY_TOOL_NAMES,
+        # MCP Manager
+        *MCP_MANAGER_TOOL_NAMES,
+        # Plugin Manager
+        *PLUGIN_MANAGER_TOOL_NAMES,
+        # Skill Manager
+        *SKILL_MANAGER_TOOL_NAMES,
+        # User management
+        *[f"mcp__jobs__{name}" for name in OWNER_TOOL_NAMES],
+        # Telegram API (динамически фильтрует)
+        *get_available_telegram_tool_names(),
+        # Browser (@playwright/mcp)
+        *BROWSER_TOOL_NAMES,
+        # Skills
+        "Skill",
+    ]
 
 # External users — только свои задачи и сводки
 EXTERNAL_ALLOWED_TOOLS = [

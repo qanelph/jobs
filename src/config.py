@@ -2,6 +2,7 @@ from datetime import datetime, timezone as tz
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,9 +41,21 @@ class Settings(BaseSettings):
     )
 
     # Telegram
-    tg_api_id: int
-    tg_api_hash: str
+    tg_api_id: int = 0
+    tg_api_hash: str = ""
+    tg_bot_token: str = ""
     tg_user_id: int
+
+    @model_validator(mode="after")
+    def _check_at_least_one_transport(self) -> "Settings":
+        has_telethon = bool(self.tg_api_id and self.tg_api_hash)
+        has_bot = bool(self.tg_bot_token)
+        if not has_telethon and not has_bot:
+            raise ValueError(
+                "Хотя бы один Telegram-транспорт должен быть настроен: "
+                "TG_API_ID + TG_API_HASH (Telethon) или TG_BOT_TOKEN (Bot)"
+            )
+        return self
 
     # Claude (API key опционален при OAuth)
     anthropic_api_key: str | None = None

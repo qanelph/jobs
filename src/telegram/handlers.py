@@ -103,7 +103,7 @@ class TelegramHandlers:
         self._primary = primary_transport
         self._is_premium: dict[TransportMode, bool] = {}
         self._updater = Updater()
-        self._reply_targets: dict[int, IncomingMessage] = {}  # user_id → latest msg (для follow-up)
+        self._reply_targets: dict[str, IncomingMessage] = {}  # session_key → latest msg (для follow-up)
 
         # Настраиваем sender'ы для user tools
         set_telegram_sender(self._send_message)
@@ -229,6 +229,8 @@ class TelegramHandlers:
         user_id = msg.sender_id
         is_owner = user_id == settings.tg_user_id
         transport = msg.transport
+        channel = transport.mode.value  # "telethon" или "bot"
+        session_key = f"{channel}:{user_id}"
 
         # /help — список команд
         if msg.text and msg.text.strip().lower() == "/help":
@@ -241,10 +243,10 @@ class TelegramHandlers:
             await transport.reply(msg, help_text)
             return
 
-        # /clear — сброс сессии
+        # /clear — сброс сессии (только текущий транспорт)
         if msg.text and msg.text.strip().lower() == "/clear":
             session_manager = get_session_manager()
-            await session_manager.reset_session(user_id)
+            await session_manager.reset_session(user_id, channel=channel)
             await transport.reply(msg, "Сессия сброшена.")
             return
 
@@ -253,7 +255,7 @@ class TelegramHandlers:
             if not is_owner:
                 return
             session_manager = get_session_manager()
-            session = session_manager.get_session(user_id)
+            session = session_manager.get_session(user_id, channel=channel)
             if session._is_querying and session._client:
                 await session._client.interrupt()
                 await transport.reply(msg, "Остановлено.")
@@ -319,15 +321,15 @@ class TelegramHandlers:
         # Включаем typing
         await transport.set_typing(msg.chat_id, typing=True)
 
-        # Получаем сессию для этого пользователя
+        # Получаем сессию для этого пользователя + транспорта
         session_manager = get_session_manager()
         user_display_name = msg.sender_first_name or msg.sender_username or str(user_id)
-        session = session_manager.get_session(user_id, user_display_name)
+        session = session_manager.get_session(user_id, user_display_name, channel=channel)
 
         # Если сессия уже обрабатывает запрос — буферизуем в incoming
         if session._is_querying:
             session.receive_incoming(prompt)
-            self._reply_targets[user_id] = msg
+            self._reply_targets[session_key] = msg
             logger.info(f"[{'owner' if is_owner else user_id}] Buffered (session busy), queue: {len(session._incoming)}")
             return
 
@@ -337,7 +339,7 @@ class TelegramHandlers:
         try:
             async for text, tool_name, is_final in session.query_stream(prompt):
                 # Перепривязка к новому сообщению при follow-up
-                new_msg = self._reply_targets.pop(user_id, None)
+                new_msg = self._reply_targets.pop(session_key, None)
                 if new_msg:
                     await status.delete()
                     msg = new_msg

@@ -29,10 +29,16 @@ class TriggerStorage:
 
         async with self._db_lock:
             if self._db is None:
-                self._db = await aiosqlite.connect(self._db_path)
-                self._db.row_factory = aiosqlite.Row
-                await self._db.execute("PRAGMA journal_mode=WAL")
-                await self._init_schema()
+                db = await aiosqlite.connect(self._db_path)
+                db.row_factory = aiosqlite.Row
+                try:
+                    await db.execute("PRAGMA journal_mode=WAL")
+                    self._db = db
+                    await self._init_schema()
+                except Exception:
+                    self._db = None
+                    await db.close()
+                    raise
         return self._db
 
     async def _init_schema(self) -> None:

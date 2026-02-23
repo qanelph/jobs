@@ -44,10 +44,10 @@ class Settings(BaseSettings):
     tg_api_id: int = 0
     tg_api_hash: str = ""
     tg_bot_token: str = ""
-    tg_user_id: int
+    tg_user_id: int = 0
 
     @model_validator(mode="after")
-    def _check_at_least_one_transport(self) -> "Settings":
+    def _validate_telegram(self) -> "Settings":
         has_telethon = bool(self.tg_api_id and self.tg_api_hash)
         has_bot = bool(self.tg_bot_token)
         if not has_telethon and not has_bot:
@@ -55,6 +55,8 @@ class Settings(BaseSettings):
                 "Хотя бы один Telegram-транспорт должен быть настроен: "
                 "TG_API_ID + TG_API_HASH (Telethon) или TG_BOT_TOKEN (Bot)"
             )
+        if not self.tg_user_id:
+            raise ValueError("TG_USER_ID обязателен (Telegram ID владельца)")
         return self
 
     # Claude (API key опционален при OAuth)

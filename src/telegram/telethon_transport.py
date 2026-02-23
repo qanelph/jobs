@@ -27,7 +27,6 @@ class TelethonTransport:
 
     def __init__(self, client: TelegramClient) -> None:
         self._client = client
-        self._callbacks: list[MessageCallback] = []
 
     @property
     def client(self) -> TelegramClient:
@@ -98,7 +97,6 @@ class TelethonTransport:
         }
 
     def on_message(self, callback: MessageCallback) -> None:
-        self._callbacks.append(callback)
         self._client.add_event_handler(
             self._make_handler(callback),
             events.NewMessage(incoming=True),

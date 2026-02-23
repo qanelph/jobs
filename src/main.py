@@ -56,6 +56,10 @@ async def main() -> None:
             logger.error("Setup не завершён")
             sys.exit(1)
 
+    # SDK patches (до любого использования claude_agent_sdk)
+    from src.users.sdk_compat import apply_sdk_patches
+    apply_sdk_patches()
+
     logger.info("Starting Jobs - Personal AI Assistant")
 
     # Инициализируем память (создаёт структуру файлов)

@@ -23,25 +23,6 @@ from claude_agent_sdk import (
 )
 from loguru import logger
 
-# Patch SDK: пропускаем неизвестные типы сообщений (e.g. rate_limit_event)
-# вместо падения с MessageParseError
-import claude_agent_sdk._internal.message_parser as _msg_parser
-
-_original_parse_message = _msg_parser.parse_message
-
-
-def _safe_parse_message(data: dict) -> object | None:
-    try:
-        return _original_parse_message(data)
-    except Exception as exc:
-        if "Unknown message type" in str(exc):
-            logger.warning(f"SDK: skipping unknown message type: {exc}")
-            return None
-        raise
-
-
-_msg_parser.parse_message = _safe_parse_message
-
 from src.config import settings, get_owner_display_name, get_owner_link
 from src.mcp_manager.config import get_mcp_config
 from src.plugin_manager.config import get_plugin_config

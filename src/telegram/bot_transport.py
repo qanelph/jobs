@@ -4,13 +4,12 @@ BotTransport — aiogram 3.x реализация Transport Protocol.
 
 from __future__ import annotations
 
-import asyncio
 import re
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher
 from aiogram.types import Message, FSInputFile
 from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramBadRequest
@@ -116,7 +115,6 @@ class BotTransport:
     def __init__(self, token: str) -> None:
         self._bot = Bot(token=token)
         self._dp = Dispatcher()
-        self._callbacks: list[MessageCallback] = []
         self._running = False
 
     @property
@@ -230,8 +228,6 @@ class BotTransport:
         }
 
     def on_message(self, callback: MessageCallback) -> None:
-        self._callbacks.append(callback)
-
         @self._dp.message()
         async def _handler(message: Message) -> None:
             if not message.from_user:

@@ -408,7 +408,7 @@ class TelegramHandlers:
                     log_text = "[фото]"
                 elif msg.has_document:
                     log_text = f"[файл: {msg.document_name or 'document'}]"
-            group_log.append_message(
+            await group_log.append_message(
                 chat_id=msg.chat_id,
                 sender_name=msg.sender_display_name,
                 username=msg.sender_username,
@@ -423,10 +423,14 @@ class TelegramHandlers:
         if not msg.is_bot_mentioned and not msg.is_reply_to_bot:
             return
 
-        # 4. Убираем @bot из текста
+        # 4. Извлекаем контент (текст + голосовые/фото/документы)
+        transport = msg.transport
+        text, media_context = await self._extract_content(msg)
+        if media_context:
+            text = f"{media_context}\n\n{text}" if text else media_context
         if not text:
             return
-        transport = msg.transport
+        # Убираем @bot из текста
         if hasattr(transport, '_me_username') and transport._me_username:
             text = re.sub(rf"@{re.escape(transport._me_username)}", "", text, flags=re.IGNORECASE).strip()
         if not text:
@@ -451,12 +455,18 @@ class TelegramHandlers:
         prompt = _sanitize_tags(text)
         prompt = f"[{time_meta}]\n{sender_meta}\n<message-body>\n{prompt}\n</message-body>"
 
-        # Включаем typing
-        await transport.set_typing(msg.chat_id, typing=True)
-
         # 6. Получаем групповую сессию
         session_manager = get_session_manager()
         session = session_manager.get_group_session(msg.chat_id, chat_title, channel)
+
+        # Если сессия уже обрабатывает запрос — буферизуем
+        if session._is_querying:
+            session.receive_incoming(prompt)
+            logger.info(f"[group:{msg.chat_id}] Buffered (session busy), queue: {len(session._incoming)}")
+            return
+
+        # Включаем typing
+        await transport.set_typing(msg.chat_id, typing=True)
 
         last_typing = asyncio.get_event_loop().time()
         status = StatusTracker(transport, msg, await self._check_premium(transport))

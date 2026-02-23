@@ -44,7 +44,8 @@ class Settings(BaseSettings):
     tg_api_id: int = 0
     tg_api_hash: str = ""
     tg_bot_token: str = ""
-    tg_user_id: int = 0
+    tg_user_id: int = 0  # backward-compat: single owner
+    tg_owner_ids: list[int] = []  # JSON array in env: TG_OWNER_IDS=[123,456]
 
     @model_validator(mode="after")
     def _validate_telegram(self) -> "Settings":
@@ -55,9 +56,23 @@ class Settings(BaseSettings):
                 "Хотя бы один Telegram-транспорт должен быть настроен: "
                 "TG_API_ID + TG_API_HASH (Telethon) или TG_BOT_TOKEN (Bot)"
             )
-        if not self.tg_user_id:
-            raise ValueError("TG_USER_ID обязателен (Telegram ID владельца)")
+        # backward-compat: если tg_owner_ids пуст — берём из tg_user_id
+        if not self.tg_owner_ids and self.tg_user_id:
+            self.tg_owner_ids = [self.tg_user_id]
+        if not self.tg_owner_ids:
+            raise ValueError("TG_OWNER_IDS или TG_USER_ID обязателен (Telegram ID владельца)")
+        # sync tg_user_id с primary owner для backward-compat
+        self.tg_user_id = self.tg_owner_ids[0]
         return self
+
+    @property
+    def primary_owner_id(self) -> int:
+        """Первый owner — для heartbeat, proactive sends."""
+        return self.tg_owner_ids[0]
+
+    def is_owner(self, telegram_id: int) -> bool:
+        """Проверяет, является ли пользователь одним из владельцев."""
+        return telegram_id in self.tg_owner_ids
 
     # Claude (API key опционален при OAuth)
     anthropic_api_key: str | None = None

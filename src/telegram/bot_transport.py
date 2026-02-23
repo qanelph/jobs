@@ -116,13 +116,17 @@ class BotTransport:
         self._bot = Bot(token=token)
         self._dp = Dispatcher()
         self._running = False
+        self._me_id: int = 0
+        self._me_username: str = ""
 
     @property
     def bot(self) -> Bot:
         return self._bot
 
     async def start(self) -> None:
-        pass  # Polling запускается в run_forever
+        me = await self._bot.get_me()
+        self._me_id = me.id
+        self._me_username = (me.username or "").lower()
 
     async def stop(self) -> None:
         self._running = False
@@ -245,15 +249,38 @@ class BotTransport:
             is_channel = chat.type == "channel"
             is_group = chat.type in ("group", "supergroup")
 
+            # Reply-to
+            reply_to_message_id: int | None = None
+            is_reply_to_bot = False
+            if message.reply_to_message:
+                reply_to_message_id = message.reply_to_message.message_id
+                reply_from = message.reply_to_message.from_user
+                if reply_from and reply_from.id == self._me_id:
+                    is_reply_to_bot = True
+
+            # Bot mention
+            text = message.text or message.caption or None
+            is_bot_mentioned = False
+            if text and self._me_username:
+                is_bot_mentioned = f"@{self._me_username}" in text.lower()
+
+            # Display name
+            user = message.from_user
+            display_name = user.first_name or ""
+            if user.last_name:
+                display_name = f"{display_name} {user.last_name}".strip()
+            if not display_name:
+                display_name = user.username or str(user.id)
+
             incoming = IncomingMessage(
                 message_id=message.message_id,
                 chat_id=chat.id,
-                sender_id=message.from_user.id,
-                sender_first_name=message.from_user.first_name,
-                sender_last_name=message.from_user.last_name,
-                sender_username=message.from_user.username,
+                sender_id=user.id,
+                sender_first_name=user.first_name,
+                sender_last_name=user.last_name,
+                sender_username=user.username,
                 sender_phone=None,  # Bot API не даёт телефон
-                text=message.text or message.caption or None,
+                text=text,
                 is_private=is_private,
                 is_channel=is_channel,
                 is_group=is_group,
@@ -262,6 +289,10 @@ class BotTransport:
                 has_document=bool(message.document),
                 document_name=doc_name,
                 document_size=doc_size,
+                reply_to_message_id=reply_to_message_id,
+                is_bot_mentioned=is_bot_mentioned,
+                is_reply_to_bot=is_reply_to_bot,
+                sender_display_name=display_name,
                 raw=message,
                 transport=self,
             )

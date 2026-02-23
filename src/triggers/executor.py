@@ -107,11 +107,11 @@ class TriggerExecutor:
             text: текст сообщения
             buffer: буферизовать в owner session (для сохранения контекста)
         """
-        await self._transport.send_message(settings.tg_user_id, text)
+        await self._transport.send_message(settings.primary_owner_id, text)
 
         # Буферизуем в owner session чтобы сохранить контекст
         if buffer:
-            owner_session = self._session_manager.get_session(settings.tg_user_id)
+            owner_session = self._session_manager.get_session(settings.primary_owner_id)
             owner_session.receive_incoming(f"[Background task output]\n{text}")
 
     def _save_transcript(

@@ -99,20 +99,21 @@ async def main() -> None:
             # Загружаем диалоги в кэш и получаем инфо о owner'е
             await client.get_dialogs()
             try:
-                owner = await client.get_entity(settings.tg_user_id)
+                owner = await client.get_entity(settings.primary_owner_id)
                 set_owner_info(
-                    telegram_id=settings.tg_user_id,
+                    telegram_id=settings.primary_owner_id,
                     first_name=owner.first_name,
                     username=owner.username,
                 )
-                logger.info(f"Owner: {owner.first_name} @{owner.username} (ID: {settings.tg_user_id})")
+                logger.info(f"Owner: {owner.first_name} @{owner.username} (owners: {settings.tg_owner_ids})")
             except Exception as e:
                 logger.warning(f"Could not get owner info: {e}. Write to bot first.")
-                set_owner_info(settings.tg_user_id, None, None)
+                set_owner_info(settings.primary_owner_id, None, None)
 
-            if me.id != settings.tg_user_id:
-                logger.warning(f"Logged user {me.id} != TG_USER_ID {settings.tg_user_id}")
+            if me.id not in settings.tg_owner_ids:
+                logger.warning(f"Logged user {me.id} not in TG_OWNER_IDS {settings.tg_owner_ids}")
 
+            await telethon_transport.start()
             transports.append(telethon_transport)
 
         except Exception as e:
@@ -184,7 +185,7 @@ async def main() -> None:
             try:
                 text = await updater.check_for_notification()
                 if text:
-                    await primary.send_message(settings.tg_user_id, text)
+                    await primary.send_message(settings.primary_owner_id, text)
             except Exception as e:
                 logger.debug(f"Auto update check failed: {e}")
 

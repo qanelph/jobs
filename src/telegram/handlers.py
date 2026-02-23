@@ -24,6 +24,7 @@ from src.triggers.executor import TriggerExecutor
 from src.media import transcribe_audio, save_media, MAX_MEDIA_SIZE
 from src.updater import Updater
 from src.telegram.transport import Transport, TransportMode, IncomingMessage
+from src.telegram import group_log
 
 MAX_TG_LENGTH = 4000
 TYPING_REFRESH_INTERVAL = 3.0
@@ -115,7 +116,7 @@ class TelegramHandlers:
     def register(self, transport: Transport) -> None:
         """Регистрирует обработчики на транспорт. Можно вызывать для нескольких."""
         transport.on_message(self._on_message)
-        logger.info(f"Registered handler on {transport.mode.value} (owner: {settings.tg_user_id})")
+        logger.info(f"Registered handler on {transport.mode.value} (owners: {settings.tg_owner_ids})")
 
     async def on_startup(self) -> None:
         """Вызывается после подключения. Проверяет pending update message."""
@@ -161,7 +162,7 @@ class TelegramHandlers:
         logger.info(f"Buffered for [{user_id}] in {len(sessions)} session(s)")
 
         # Если получатель — owner и ни одна сессия не занята, запускаем автономный query
-        if user_id == settings.tg_user_id:
+        if settings.is_owner(user_id):
             any_querying = any(s._is_querying for s in sessions)
             logger.info(f"Owner is recipient, any_querying={any_querying}")
             if not any_querying:
@@ -178,7 +179,7 @@ class TelegramHandlers:
             s.receive_incoming(text)
         logger.info(f"Injected to context [{user_id}] in {len(sessions)} session(s)")
 
-        if user_id == settings.tg_user_id:
+        if settings.is_owner(user_id):
             if not any(s._is_querying for s in sessions):
                 asyncio.create_task(self._process_incoming(user_id))
 
@@ -228,16 +229,21 @@ class TelegramHandlers:
             logger.error(f"Incoming processing error [{user_id}]: {e}")
 
     async def _on_message(self, msg: IncomingMessage) -> None:
-        """Обрабатывает входящее сообщение (только private chats)."""
-        # Пропускаем каналы и группы — ими занимаются trigger subscriptions
-        if msg.is_channel or msg.is_group:
+        """Обрабатывает входящее сообщение."""
+        # Каналы — ими занимаются trigger subscriptions
+        if msg.is_channel:
+            return
+
+        # Группы — отдельная обработка
+        if msg.is_group:
+            await self._on_group_message(msg)
             return
 
         if not msg.sender_id:
             return
 
         user_id = msg.sender_id
-        is_owner = user_id == settings.tg_user_id
+        is_owner = settings.is_owner(user_id)
         transport = msg.transport
         channel = transport.mode.value  # "telethon" или "bot"
         session_key = f"{channel}:{user_id}"
@@ -374,6 +380,101 @@ class TelegramHandlers:
 
         except Exception as e:
             logger.error(f"Error: {e}")
+            await status.delete()
+            await transport.reply(msg, f"Ошибка: {e}")
+
+        finally:
+            await transport.set_typing(msg.chat_id, typing=False)
+            await status.delete()
+
+    async def _on_group_message(self, msg: IncomingMessage) -> None:
+        """Обрабатывает сообщение из группового чата."""
+        if not msg.sender_id:
+            return
+
+        # 1. Записываем ВСЕ сообщения в лог группы
+        text = msg.text or ""
+        if text or msg.has_voice or msg.has_photo or msg.has_document:
+            log_text = text
+            if not log_text:
+                if msg.has_voice:
+                    log_text = "[голосовое]"
+                elif msg.has_photo:
+                    log_text = "[фото]"
+                elif msg.has_document:
+                    log_text = f"[файл: {msg.document_name or 'document'}]"
+            group_log.append_message(
+                chat_id=msg.chat_id,
+                sender_name=msg.sender_display_name,
+                username=msg.sender_username,
+                text=log_text,
+            )
+
+        # 2. Только owner'ы могут триггерить бота
+        if not settings.is_owner(msg.sender_id):
+            return
+
+        # 3. Только по mention или reply к боту
+        if not msg.is_bot_mentioned and not msg.is_reply_to_bot:
+            return
+
+        # 4. Убираем @bot из текста
+        if not text:
+            return
+        transport = msg.transport
+        if hasattr(transport, '_me_username') and transport._me_username:
+            text = re.sub(rf"@{re.escape(transport._me_username)}", "", text, flags=re.IGNORECASE).strip()
+        if not text:
+            return
+
+        channel = transport.mode.value
+        chat_title = ""
+        # Пробуем получить название чата
+        raw = msg.raw
+        if hasattr(raw, "chat") and hasattr(raw.chat, "title"):
+            chat_title = raw.chat.title or ""
+        elif hasattr(raw, "message") and hasattr(raw.message, "chat") and hasattr(raw.message.chat, "title"):
+            chat_title = raw.message.chat.title or ""
+
+        logger.info(f"[group:{msg.chat_id}] Owner {msg.sender_id} triggered bot: {text[:80]}...")
+
+        # 5. Добавляем метаданные и оборачиваем
+        now = datetime.now(tz=settings.get_timezone())
+        time_meta = now.strftime("%d.%m.%Y %H:%M")
+        prompt = _sanitize_tags(text)
+        prompt = f"[{time_meta}]\n<message-body>\n{prompt}\n</message-body>"
+
+        # Включаем typing
+        await transport.set_typing(msg.chat_id, typing=True)
+
+        # 6. Получаем групповую сессию
+        session_manager = get_session_manager()
+        session = session_manager.get_group_session(msg.chat_id, chat_title, channel)
+
+        last_typing = asyncio.get_event_loop().time()
+        status = StatusTracker(transport, msg, await self._check_premium(transport))
+
+        try:
+            async for response_text, tool_name, is_final in session.query_stream(prompt):
+                now_time = asyncio.get_event_loop().time()
+                if now_time - last_typing > TYPING_REFRESH_INTERVAL:
+                    await transport.set_typing(msg.chat_id, typing=True)
+                    last_typing = now_time
+
+                if tool_name:
+                    await status.set_active(self._format_tool(tool_name))
+                elif response_text and not is_final:
+                    text_clean = response_text.strip()
+                    if text_clean:
+                        await status.set_done(text_clean)
+                elif is_final and response_text:
+                    final_text = response_text.strip()
+                    if final_text:
+                        await status.delete()
+                        await transport.reply(msg, final_text)
+
+        except Exception as e:
+            logger.error(f"Group message error: {e}")
             await status.delete()
             await transport.reply(msg, f"Ошибка: {e}")
 

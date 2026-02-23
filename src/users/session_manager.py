@@ -468,7 +468,7 @@ class SessionManager:
             telegram_id=telegram_id,
             username=user_display_name,
             owner_name=get_owner_display_name(),
-            owner_telegram_id=settings.tg_user_id,
+            owner_telegram_id=settings.primary_owner_id,
             owner_contact_info=contact_info,
             task_context="",  # task_context добавляется в prompt, не в system_prompt
         )
@@ -483,7 +483,7 @@ class SessionManager:
         if key in self._sessions:
             return self._sessions[key]
 
-        is_owner = telegram_id == settings.tg_user_id
+        is_owner = settings.is_owner(telegram_id)
 
         if is_owner:
             system_prompt = self._get_owner_prompt()
@@ -509,7 +509,7 @@ class SessionManager:
         return session
 
     def get_owner_session(self) -> UserSession:
-        return self.get_session(settings.tg_user_id)
+        return self.get_session(settings.primary_owner_id)
 
     def get_user_sessions(self, telegram_id: int) -> list[UserSession]:
         """Все активные сессии пользователя (по всем транспортам)."""
@@ -569,6 +569,55 @@ class SessionManager:
             session._save_session_id(session_id)
             return session
         return None
+
+    @staticmethod
+    def _make_group_key(chat_id: int, channel: str) -> str:
+        """Ключ групповой сессии: 'group:bot:-1001234'."""
+        return f"group:{channel}:{chat_id}"
+
+    def get_group_session(
+        self,
+        chat_id: int,
+        chat_title: str,
+        channel: str,
+    ) -> UserSession:
+        """Возвращает (или создаёт) сессию для группового чата."""
+        key = self._make_group_key(chat_id, channel)
+        if key in self._sessions:
+            return self._sessions[key]
+
+        from src.users.prompts import GROUP_SYSTEM_PROMPT_TEMPLATE, BOT_FORMATTING_SUFFIX
+        from src.telegram.group_log import get_log_path
+
+        system_prompt = GROUP_SYSTEM_PROMPT_TEMPLATE.format(
+            chat_title=chat_title,
+            chat_id=chat_id,
+            owner_ids=settings.tg_owner_ids,
+            timezone=str(settings.get_timezone()),
+            log_path=get_log_path(chat_id),
+        )
+
+        if channel == "bot":
+            system_prompt += BOT_FORMATTING_SUFFIX
+
+        session = UserSession(
+            telegram_id=0,
+            session_dir=self._session_dir,
+            system_prompt=system_prompt,
+            is_owner=True,
+            session_key=key,
+        )
+        self._sessions[key] = session
+        logger.info(f"Created group session for {key} ({chat_title})")
+        return session
+
+    async def reset_group_session(self, chat_id: int, channel: str) -> None:
+        """Сбрасывает групповую сессию."""
+        key = self._make_group_key(chat_id, channel)
+        if key in self._sessions:
+            session = self._sessions[key]
+            await session.destroy()
+            del self._sessions[key]
 
     async def reset_session(self, telegram_id: int, channel: str | None = None) -> None:
         key = self._make_key(telegram_id, channel)

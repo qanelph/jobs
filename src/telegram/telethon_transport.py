@@ -27,6 +27,8 @@ class TelethonTransport:
 
     def __init__(self, client: TelegramClient) -> None:
         self._client = client
+        self._me_id: int = 0
+        self._me_username: str = ""
 
     @property
     def client(self) -> TelegramClient:
@@ -34,7 +36,9 @@ class TelethonTransport:
         return self._client
 
     async def start(self) -> None:
-        pass  # Клиент уже подключён из main.py
+        me = await self._client.get_me()
+        self._me_id = me.id
+        self._me_username = (me.username or "").lower()
 
     async def stop(self) -> None:
         await self._client.disconnect()
@@ -119,15 +123,45 @@ class TelethonTransport:
                         doc_name = attr.file_name
                         break
 
+            # Reply-to
+            reply_to_message_id: int | None = None
+            is_reply_to_bot = False
+            if message.reply_to and hasattr(message.reply_to, "reply_to_msg_id"):
+                reply_to_message_id = message.reply_to.reply_to_msg_id
+                # Проверяем reply к боту (только для групп, чтобы не тратить запрос)
+                if event.is_group and reply_to_message_id:
+                    try:
+                        reply_msg = await message.get_reply_message()
+                        if reply_msg and reply_msg.sender_id == self._me_id:
+                            is_reply_to_bot = True
+                    except Exception:
+                        pass
+
+            # Bot mention
+            text = message.text or None
+            is_bot_mentioned = False
+            if text and self._me_username:
+                is_bot_mentioned = f"@{self._me_username}" in text.lower()
+
+            # Display name
+            first_name = sender.first_name if hasattr(sender, "first_name") else None
+            last_name = sender.last_name if hasattr(sender, "last_name") else None
+            username = sender.username if hasattr(sender, "username") else None
+            display_name = (first_name or "")
+            if last_name:
+                display_name = f"{display_name} {last_name}".strip()
+            if not display_name:
+                display_name = username or str(sender.id)
+
             incoming = IncomingMessage(
                 message_id=message.id,
                 chat_id=event.chat_id,
                 sender_id=sender.id,
-                sender_first_name=sender.first_name if hasattr(sender, "first_name") else None,
-                sender_last_name=sender.last_name if hasattr(sender, "last_name") else None,
-                sender_username=sender.username if hasattr(sender, "username") else None,
+                sender_first_name=first_name,
+                sender_last_name=last_name,
+                sender_username=username,
                 sender_phone=sender.phone if hasattr(sender, "phone") else None,
-                text=message.text or None,
+                text=text,
                 is_private=event.is_private,
                 is_channel=event.is_channel and not event.is_group,
                 is_group=event.is_group,
@@ -136,6 +170,10 @@ class TelethonTransport:
                 has_document=bool(message.document),
                 document_name=doc_name,
                 document_size=doc_size,
+                reply_to_message_id=reply_to_message_id,
+                is_bot_mentioned=is_bot_mentioned,
+                is_reply_to_bot=is_reply_to_bot,
+                sender_display_name=display_name,
                 raw=event,
                 transport=self,
             )

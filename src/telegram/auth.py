@@ -33,6 +33,13 @@ def _print_qr(url: str) -> None:
     qr.print_ascii(invert=True)
 
 
+async def _handle_2fa(client: TelegramClient) -> bool:
+    """Запрашивает 2FA пароль и завершает авторизацию."""
+    password = _safe_input("Введи 2FA пароль: ")
+    await client.sign_in(password=password)
+    return True
+
+
 async def _qr_auth(client: TelegramClient) -> bool:
     """Авторизация через QR-код."""
     print("\nОткрой Telegram на телефоне:")
@@ -59,10 +66,10 @@ async def _qr_auth(client: TelegramClient) -> bool:
         except asyncio.TimeoutError:
             print("\nТаймаут. Попробуй ввод по номеру.")
             return False
+        except SessionPasswordNeededError:
+            return await _handle_2fa(client)
     except SessionPasswordNeededError:
-        password = _safe_input("Введи 2FA пароль: ")
-        await client.sign_in(password=password)
-        return True
+        return await _handle_2fa(client)
 
 
 async def _phone_auth(client: TelegramClient) -> bool:

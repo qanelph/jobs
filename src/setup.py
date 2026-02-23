@@ -10,8 +10,7 @@ from pathlib import Path
 from loguru import logger
 
 from src.config import settings
-from src.telegram.client import create_client, load_session_string
-from src.telegram.auth import interactive_auth
+from src.telegram.client import load_session_string
 
 
 # Claude хранит credentials в /home/jobs/.claude (монтируется из ./data/.claude)
@@ -24,9 +23,15 @@ CLAUDE_AUTH_FILES = [
 
 
 def is_telegram_configured() -> bool:
-    """Проверяет наличие Telegram сессии."""
+    """Проверяет наличие хотя бы одного Telegram-транспорта."""
+    # Telethon: есть сессия
     session = load_session_string()
-    return session is not None and len(session) > 0
+    has_telethon = session is not None and len(session) > 0
+
+    # Bot: есть токен
+    has_bot = bool(settings.tg_bot_token)
+
+    return has_telethon or has_bot
 
 
 def is_claude_configured() -> bool:
@@ -77,8 +82,39 @@ def _setup_claude_interactive() -> bool:
     return False
 
 
-async def _setup_telegram() -> bool:
-    """Настраивает Telegram."""
+def _safe_input(prompt: str) -> str:
+    """Безопасный ввод с обработкой кодировки."""
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    value = sys.stdin.readline().strip()
+    return value.encode("utf-8", errors="ignore").decode("utf-8")
+
+
+def _write_env_var(key: str, value: str) -> None:
+    """Записывает или обновляет переменную в .env файле."""
+    env_path = Path(".env")
+    lines: list[str] = []
+    found = False
+
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            if line.startswith(f"{key}="):
+                lines.append(f"{key}={value}")
+                found = True
+            else:
+                lines.append(line)
+
+    if not found:
+        lines.append(f"{key}={value}")
+
+    env_path.write_text("\n".join(lines) + "\n")
+
+
+async def _setup_telegram_telethon() -> bool:
+    """Настраивает Telegram через Telethon (userbot)."""
+    from src.telegram.client import create_client
+    from src.telegram.auth import interactive_auth
+
     session_string = load_session_string()
     client = create_client(session_string)
 
@@ -86,15 +122,74 @@ async def _setup_telegram() -> bool:
         await interactive_auth(client)
         return True
     except Exception as e:
-        logger.error(f"Ошибка Telegram: {e}")
+        logger.error(f"Ошибка Telegram Telethon: {e}")
         return False
     finally:
         await client.disconnect()
 
 
-async def run_setup() -> bool:
+def _setup_telegram_bot() -> bool:
+    """Настраивает Telegram через Bot API."""
+    token = _safe_input("Введи токен бота (@BotFather → /newbot): ")
+    if not token or ":" not in token:
+        print("Некорректный токен")
+        return False
+
+    _write_env_var("TG_BOT_TOKEN", token)
+
+    # Спрашиваем TG_USER_ID если ещё не задан
+    if not settings.tg_user_id:
+        user_id = _safe_input("Введи свой Telegram ID (владелец бота): ")
+        if not user_id.isdigit():
+            print("Некорректный ID")
+            return False
+        _write_env_var("TG_USER_ID", user_id)
+
+    logger.info("Bot token сохранён")
+    return True
+
+
+async def _setup_telegram() -> bool:
+    """Настраивает Telegram транспорт(ы)."""
+    has_telethon_config = bool(settings.tg_api_id and settings.tg_api_hash)
+
+    if has_telethon_config:
+        print("Выбери способ подключения:")
+        print("[1] Telethon (userbot) — полный доступ к Telegram")
+        print("[2] Telegram Bot — через API токен (ограниченный доступ)")
+        print("[3] Оба — и Telethon, и Bot одновременно")
+        choice = _safe_input("\n> ")
+    else:
+        print("TG_API_ID / TG_API_HASH не заданы.")
+        print("[1] Telegram Bot — через API токен")
+        print("[2] Задать Telethon вручную (API ID/Hash)")
+        choice = _safe_input("\n> ")
+
+        if choice == "1":
+            return _setup_telegram_bot()
+        else:
+            print("Задай TG_API_ID и TG_API_HASH в .env и перезапусти")
+            return False
+
+    if choice == "1":
+        return await _setup_telegram_telethon()
+    elif choice == "2":
+        return _setup_telegram_bot()
+    elif choice == "3":
+        if not await _setup_telegram_telethon():
+            return False
+        return _setup_telegram_bot()
+    else:
+        print("Неизвестный выбор")
+        return False
+
+
+async def run_setup(force: bool = False) -> bool:
     """
     Запускает полный setup flow.
+
+    Args:
+        force: принудительный запуск (--setup), всегда показывает меню транспортов.
 
     Returns:
         True если настройка успешна.
@@ -111,19 +206,29 @@ async def run_setup() -> bool:
     print("Шаг 1/2: Telegram")
     print("-" * 30)
 
-    if is_telegram_configured():
+    if force:
+        # --setup: всегда показываем меню транспортов
+        if not await _setup_telegram():
+            return False
+    elif is_telegram_configured():
+        # Проверяем Telethon сессию если есть
         session = load_session_string()
-        client = create_client(session)
-        try:
-            await client.connect()
-            if await client.is_user_authorized():
-                me = await client.get_me()
-                logger.info(f"Telegram: {me.first_name} (ID: {me.id})")
-            else:
-                if not await _setup_telegram():
-                    return False
-        finally:
-            await client.disconnect()
+        if session:
+            from src.telegram.client import create_client
+            client = create_client(session)
+            try:
+                await client.connect()
+                if await client.is_user_authorized():
+                    me = await client.get_me()
+                    logger.info(f"Telethon: {me.first_name} (ID: {me.id})")
+                else:
+                    if not await _setup_telegram():
+                        return False
+            finally:
+                await client.disconnect()
+
+        if settings.tg_bot_token:
+            logger.info(f"Bot token: настроен")
     else:
         if not await _setup_telegram():
             return False

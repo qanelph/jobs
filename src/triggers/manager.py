@@ -6,14 +6,18 @@ TriggerManager — центральный координатор триггер�
 2. Динамические (dynamic) — tg_channel, email. Агент создаёт через tools.
 """
 
-from typing import Callable, Protocol, runtime_checkable
+from __future__ import annotations
+
+from typing import Any, Callable, Protocol, runtime_checkable, TYPE_CHECKING
 
 from loguru import logger
-from telethon import TelegramClient
 
 from src.triggers.executor import TriggerExecutor
 from src.triggers.models import TriggerSubscription
 from src.triggers.storage import TriggerStorage
+
+if TYPE_CHECKING:
+    from src.telegram.transport import Transport
 
 
 @runtime_checkable
@@ -24,9 +28,9 @@ class TriggerSource(Protocol):
     async def stop(self) -> None: ...
 
 
-# Factory: (executor, client, config, prompt) → TriggerSource
+# Factory: (executor, transport, config, prompt) → TriggerSource
 TriggerFactory = Callable[
-    [TriggerExecutor, TelegramClient, dict, str],
+    [TriggerExecutor, "Transport", dict, str],
     TriggerSource,
 ]
 
@@ -40,11 +44,11 @@ class TriggerManager:
     def __init__(
         self,
         executor: TriggerExecutor,
-        client: TelegramClient,
+        transport: "Transport",
         db_path: str,
     ) -> None:
         self._executor = executor
-        self._client = client
+        self._transport = transport
         self._storage = TriggerStorage(db_path)
         self._builtins: dict[str, TriggerSource] = {}
         self._dynamic: dict[str, TriggerSource] = {}  # sub_id → source
@@ -149,7 +153,7 @@ class TriggerManager:
         if not factory:
             raise ValueError(f"Нет factory для типа '{sub.trigger_type}'")
 
-        source = factory(self._executor, self._client, sub.config, sub.prompt)
+        source = factory(self._executor, self._transport, sub.config, sub.prompt)
         await source.start()
         self._dynamic[sub.id] = source
         logger.info(f"Dynamic trigger started [{sub.id}]: {sub.trigger_type}")

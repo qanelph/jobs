@@ -170,8 +170,8 @@ class UserSession:
         if self._allowed_tools_override is not None:
             allowed_tools = self._allowed_tools_override
         else:
-            from src.tools import OWNER_ALLOWED_TOOLS, EXTERNAL_ALLOWED_TOOLS
-            allowed_tools = OWNER_ALLOWED_TOOLS if self.is_owner else EXTERNAL_ALLOWED_TOOLS
+            from src.tools import get_owner_allowed_tools, EXTERNAL_ALLOWED_TOOLS
+            allowed_tools = get_owner_allowed_tools() if self.is_owner else EXTERNAL_ALLOWED_TOOLS
 
         permission_mode = "bypassPermissions" if self.is_owner else "default"
 
@@ -240,6 +240,8 @@ class UserSession:
                     interrupted = False
 
                     async for message in client.receive_response():
+                        if message is None:
+                            continue
                         if isinstance(message, AssistantMessage):
                             for block in message.content:
                                 if isinstance(block, TextBlock):
@@ -264,6 +266,8 @@ class UserSession:
                         interrupted = False
 
                         async for message in client.receive_response():
+                            if message is None:
+                                continue
                             if isinstance(message, AssistantMessage):
                                 for block in message.content:
                                     if isinstance(block, TextBlock):
@@ -332,6 +336,8 @@ class UserSession:
                 interrupted = False
 
                 async for message in client.receive_response():
+                    if message is None:
+                        continue
                     if isinstance(message, AssistantMessage):
                         for block in message.content:
                             if isinstance(block, TextBlock):
@@ -362,6 +368,8 @@ class UserSession:
                     interrupted = False
 
                     async for message in client.receive_response():
+                        if message is None:
+                            continue
                         if isinstance(message, AssistantMessage):
                             for block in message.content:
                                 if isinstance(block, TextBlock):
@@ -420,17 +428,24 @@ class UserSession:
 
 
 class SessionManager:
-    """Менеджер сессий — создаёт и хранит сессии по telegram_id."""
+    """Менеджер сессий — создаёт и хранит сессии по telegram_id + channel."""
 
     def __init__(self, session_dir: Path) -> None:
         self._session_dir = session_dir
         self._session_dir.mkdir(parents=True, exist_ok=True)
-        self._sessions: dict[int, UserSession] = {}
+        self._sessions: dict[str, UserSession] = {}
         self._task_sessions: dict[str, UserSession] = {}
         self._ephemeral_counter: int = 0
 
         self._owner_prompt: str | None = None
         self._external_prompt_template: str | None = None
+
+    @staticmethod
+    def _make_key(telegram_id: int, channel: str | None = None) -> str:
+        """Составной ключ сессии: 'bot:123' для бота, '123' для Telethon (backward-compat)."""
+        if channel and channel != "telethon":
+            return f"{channel}:{telegram_id}"
+        return str(telegram_id)
 
     def _get_owner_prompt(self) -> str:
         if self._owner_prompt is None:
@@ -458,9 +473,15 @@ class SessionManager:
             task_context="",  # task_context добавляется в prompt, не в system_prompt
         )
 
-    def get_session(self, telegram_id: int, user_display_name: str | None = None) -> UserSession:
-        if telegram_id in self._sessions:
-            return self._sessions[telegram_id]
+    def get_session(
+        self,
+        telegram_id: int,
+        user_display_name: str | None = None,
+        channel: str | None = None,
+    ) -> UserSession:
+        key = self._make_key(telegram_id, channel)
+        if key in self._sessions:
+            return self._sessions[key]
 
         is_owner = telegram_id == settings.tg_user_id
 
@@ -470,20 +491,33 @@ class SessionManager:
             display_name = user_display_name or str(telegram_id)
             system_prompt = self._get_external_prompt(telegram_id, display_name)
 
+        if channel == "bot":
+            from src.users.prompts import BOT_FORMATTING_SUFFIX
+            system_prompt += BOT_FORMATTING_SUFFIX
+
         session = UserSession(
             telegram_id=telegram_id,
             session_dir=self._session_dir,
             system_prompt=system_prompt,
             is_owner=is_owner,
+            session_key=key,
         )
 
-        self._sessions[telegram_id] = session
-        logger.info(f"Created session for {telegram_id} (owner={is_owner})")
+        self._sessions[key] = session
+        logger.info(f"Created session for {key} (owner={is_owner})")
 
         return session
 
     def get_owner_session(self) -> UserSession:
         return self.get_session(settings.tg_user_id)
+
+    def get_user_sessions(self, telegram_id: int) -> list[UserSession]:
+        """Все активные сессии пользователя (по всем транспортам)."""
+        suffix = str(telegram_id)
+        return [
+            s for key, s in self._sessions.items()
+            if key == suffix or key.endswith(f":{suffix}")
+        ]
 
     def create_background_session(self) -> UserSession:
         """Создаёт одноразовую сессию с owner tools для scheduler/triggers."""
@@ -536,11 +570,12 @@ class SessionManager:
             return session
         return None
 
-    async def reset_session(self, telegram_id: int) -> None:
-        if telegram_id in self._sessions:
-            session = self._sessions[telegram_id]
+    async def reset_session(self, telegram_id: int, channel: str | None = None) -> None:
+        key = self._make_key(telegram_id, channel)
+        if key in self._sessions:
+            session = self._sessions[key]
             await session.destroy()
-            del self._sessions[telegram_id]
+            del self._sessions[key]
 
     async def reset_all(self) -> None:
         for session in self._sessions.values():

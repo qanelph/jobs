@@ -76,7 +76,7 @@ async def schedule_task(args: dict[str, Any]) -> dict[str, Any]:
     task = await repo.create_task(
         title=title,
         kind="scheduled",
-        created_by=settings.tg_user_id,
+        created_by=settings.primary_owner_id,
         context=context,
         schedule_at=scheduled_at,
         schedule_repeat=repeat_seconds,
@@ -166,7 +166,7 @@ class SchedulerRunner:
             prompt = (
                 f"{base_prompt}\n\n---\n"
                 f"[Системная инструкция: Это автоматическая задача по расписанию. "
-                f"Owner ID: {settings.tg_user_id}. "
+                f"Owner IDs: {settings.tg_owner_ids}. "
                 f"Если в задаче НЕ указаны конкретные получатели, "
                 f"НЕ отправляй сообщения другим пользователям — только выполни задачу и верни результат owner'у.]"
             )

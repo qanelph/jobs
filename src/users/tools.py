@@ -107,7 +107,7 @@ async def create_task(args: dict[str, Any]) -> dict[str, Any]:
         title=title,
         kind=kind,
         assignee_id=user.telegram_id,
-        created_by=settings.tg_user_id,
+        created_by=settings.primary_owner_id,
         deadline=deadline,
         context=context,
     )
@@ -293,7 +293,7 @@ async def ban_user(args: dict[str, Any]) -> dict[str, Any]:
     if _telegram_sender:
         username = f" (@{user.username})" if user.username else ""
         await _telegram_sender(
-            settings.tg_user_id,
+            settings.primary_owner_id,
             f"Пользователь {user.display_name}{username} забанен"
         )
 
@@ -330,7 +330,7 @@ async def unban_user(args: dict[str, Any]) -> dict[str, Any]:
     if _telegram_sender:
         username = f" (@{user.username})" if user.username else ""
         await _telegram_sender(
-            settings.tg_user_id,
+            settings.primary_owner_id,
             f"Пользователь {user.display_name}{username} разбанен"
         )
 
@@ -441,7 +441,7 @@ async def update_task(args: dict[str, Any]) -> dict[str, Any]:
                 # Уведомляем owner'а если нужно
                 if content and _telegram_sender:
                     from src.config import settings as _s
-                    await _telegram_sender(_s.tg_user_id, f"💎 Обновлена [{task_id}]:\n{content[:500]}")
+                    await _telegram_sender(_s.primary_owner_id, f"💎 Обновлена [{task_id}]:\n{content[:500]}")
             except Exception as e:
                 logger.error(f"Task followup [{task_id}] failed: {e}")
 
@@ -459,7 +459,7 @@ async def update_task(args: dict[str, Any]) -> dict[str, Any]:
         if details:
             details = _sanitize_tags(details)
             message += f"\n<message-body>\n{details}\n</message-body>"
-        await _context_sender(settings.tg_user_id, message)
+        await _context_sender(settings.primary_owner_id, message)
 
     return _text(f"💎 Обновлена [{task_id}], владелец уведомлён")
 
@@ -487,7 +487,7 @@ async def send_summary_to_owner(args: dict[str, Any]) -> dict[str, Any]:
     message = f"<sender-meta>Сводка от {user_name} (ID: {user_id})</sender-meta>\n<message-body>\n{summary}\n</message-body>"
 
     if _context_sender:
-        await _context_sender(settings.tg_user_id, message)
+        await _context_sender(settings.primary_owner_id, message)
         logger.info(f"Summary sent to owner context from {user_name}")
         return _text("Сводка отправлена владельцу")
     else:
@@ -508,7 +508,7 @@ async def ban_violator(args: dict[str, Any]) -> dict[str, Any]:
         return _error("user_id обязателен (твой Telegram ID из промпта)")
 
     from src.config import settings as _settings
-    if user_id == _settings.tg_user_id:
+    if _settings.is_owner(user_id):
         return _error("Невозможно забанить владельца")
 
     repo = get_users_repository()
@@ -526,7 +526,7 @@ async def ban_violator(args: dict[str, Any]) -> dict[str, Any]:
     if _telegram_sender:
         username = f" (@{user.username})" if user.username else ""
         await _telegram_sender(
-            settings.tg_user_id,
+            settings.primary_owner_id,
             f"{user.display_name}{username} забанен.\nПричина: {reason}"
         )
 

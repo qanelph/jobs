@@ -122,13 +122,13 @@ class HeartbeatRunner:
                 message = f"\U0001f4a1\n{content}"
                 if len(message) > MAX_MESSAGE_LENGTH:
                     message = message[:MAX_MESSAGE_LENGTH] + "..."
-                await self._transport.send_message(settings.tg_user_id, message)
+                await self._transport.send_message(settings.primary_owner_id, message)
                 logger.info(f"Heartbeat notification sent: {content[:80]}...")
 
         # 4. Если task sessions вернули сообщения — отправляем
         if task_messages:
             combined = "\n".join(task_messages)
-            await self._transport.send_message(settings.tg_user_id, f"💎 Задачи:\n{combined}")
+            await self._transport.send_message(settings.primary_owner_id, f"💎 Задачи:\n{combined}")
 
     async def _check_task_sessions(self) -> list[str]:
         """Resume task sessions параллельно для проверки состояния."""
@@ -206,7 +206,7 @@ class HeartbeatRunner:
         # Отправляем напоминания пользователям
         for user_id, tasks in by_user.items():
             # Не напоминаем owner'у через этот механизм
-            if user_id == settings.tg_user_id:
+            if settings.is_owner(user_id):
                 continue
 
             user = await repo.get_user(user_id)

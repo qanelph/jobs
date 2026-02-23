@@ -43,6 +43,10 @@ class IncomingMessage:
     document_size: int | None
     raw: Any  # Telethon event или aiogram Message
     transport: Transport  # Транспорт-источник (для reply)
+    reply_to_message_id: int | None = None
+    is_bot_mentioned: bool = False
+    is_reply_to_bot: bool = False
+    sender_display_name: str = ""
 
 
 # Callback type для on_message

@@ -4,6 +4,7 @@
 
 Автономный ИИ-ассистент на базе Claude SDK в Telegram.
 Мульти-сессионная архитектура с изоляцией по ролям.
+Dual transport: Telethon (userbot) + aiogram (Bot API) — параллельно или по отдельности.
 
 ## Архитектура
 
@@ -11,20 +12,23 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Docker: jobs                                  │
 │                                                                  │
-│  ┌─────────────────────┐                                        │
-│  │   Owner Session     │ ← Полный доступ                        │
-│  │   bypassPermissions │   Memory, Scheduler, MCP, Browser...   │
-│  └─────────────────────┘                                        │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │              Transport Layer                               │   │
+│  │  Telethon (userbot)  ←→  IncomingMessage  ←→  Bot (aiogram)│   │
+│  │  TG_API_ID/HASH           Transport Protocol   TG_BOT_TOKEN│   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                          ↓                                       │
+│  ┌─────────────────────┐  ┌─────────────────────┐              │
+│  │   Owner Sessions    │  │   Group Sessions     │              │
+│  │   bypassPermissions │  │   per chat_id        │              │
+│  │   Memory, MCP, ...  │  │   mention/reply only │              │
+│  └─────────────────────┘  └─────────────────────┘              │
 │                                                                  │
-│  ┌─────────────────────┐                                        │
-│  │   External Sessions │ ← Ограниченный доступ                  │
-│  │   default perms     │   Только: get_my_tasks,                │
-│  └─────────────────────┘   send_summary_to_owner, update_task   │
-│                                                                  │
-│  ┌─────────────────────┐                                        │
-│  │   Task Sessions     │ ← Persistent per-task                   │
-│  │   bypassPermissions │   Помнят контекст задачи (skill, ход)  │
-│  └─────────────────────┘   Resume через session_id в БД         │
+│  ┌─────────────────────┐  ┌─────────────────────┐              │
+│  │  External Sessions  │  │   Task Sessions     │              │
+│  │  default perms      │  │   bypassPermissions │              │
+│  │  get_my_tasks, ...  │  │   persistent context│              │
+│  └─────────────────────┘  └─────────────────────┘              │
 │                                                                  │
 │  ┌─────────────────────────────────────────────────────────┐   │
 │  │          TriggerManager                                   │   │
@@ -37,11 +41,12 @@
 │  ┌─────────────────────────────────────────────────────────┐   │
 │  │              SQLite (db.sqlite)                          │   │
 │  │  • external_users  • tasks (+ next_step, session_id)      │
-│  • trigger_subscriptions                                   │   │
+│  │  • trigger_subscriptions                                  │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                  │
 │  /data/sessions/  — Claude session IDs                          │
 │  /workspace/      — рабочая директория owner'а                  │
+│  /workspace/group_logs/ — логи групповых чатов                  │
 └─────────────────────────────────────────────────────────────────┘
          │
          │ CDP (Chrome DevTools Protocol)
@@ -64,13 +69,18 @@
 | Путь | Описание |
 |------|----------|
 | `src/users/` | SessionManager, Repository, Tools, Prompts |
-| `src/telegram/` | Telethon handlers + Telegram API tools |
+| `src/telegram/` | Dual transport (Telethon + Bot), handlers, group log |
+| `src/telegram/transport.py` | Transport Protocol + IncomingMessage dataclass |
+| `src/telegram/telethon_transport.py` | Telethon (userbot) transport |
+| `src/telegram/bot_transport.py` | aiogram 3.x (Bot API) transport + MarkdownV2 |
+| `src/telegram/group_log.py` | Логирование групповых чатов + ротация |
 | `src/memory/` | MEMORY.md + vector search |
 | `src/tools/` | Scheduler + разделение по ролям |
 | `src/triggers/` | Unified trigger system (scheduler, heartbeat, tg_channel) |
 | `src/mcp_manager/` | Внешние MCP серверы |
 | `src/plugin_manager/` | Плагины из маркетплейса |
 | `src/skill_manager/` | Управление локальными skills |
+| `src/users/sdk_compat.py` | Monkey-patch для Claude SDK (unknown message types) |
 | `skills/` | Skills через SDK (монтируется в `.claude/skills/`) |
 | `browser/` | Docker-контейнер с Chromium |
 
@@ -214,36 +224,72 @@ tools: Read, Bash
 
 ## Разделение доступа
 
-| Tool | Owner | External |
-|------|-------|----------|
-| Bash, Read, Write | ✅ | ❌ |
-| Memory | ✅ | ❌ |
-| Scheduler | ✅ | ❌ |
-| Triggers | ✅ | ❌ |
-| Browser | ✅ | ❌ |
-| MCP Manager | ✅ | ❌ |
-| Telegram API | ✅ | ❌ |
-| send_to_user | ✅ | ❌ |
-| create_task | ✅ | ❌ |
-| send_summary_to_owner | ❌ | ✅ |
-| get_my_tasks | ❌ | ✅ |
+| Tool | Owner | External | Group |
+|------|-------|----------|-------|
+| Bash, Read, Write | ✅ | ❌ | ✅ |
+| Memory | ✅ | ❌ | ❌ |
+| Scheduler | ✅ | ❌ | ❌ |
+| Triggers | ✅ | ❌ | ❌ |
+| Browser | ✅ | ❌ | ❌ |
+| MCP Manager | ✅ | ❌ | ❌ |
+| Telegram API | ✅ | ❌ | ❌ |
+| send_to_user | ✅ | ❌ | ❌ |
+| create_task | ✅ | ❌ | ❌ |
+| send_summary_to_owner | ❌ | ✅ | ❌ |
+| get_my_tasks | ❌ | ✅ | ❌ |
+
+## Транспорты
+
+Два транспорта работают параллельно (или по отдельности):
+
+| Транспорт | Конфиг | Возможности |
+|-----------|--------|-------------|
+| **Telethon** (userbot) | `TG_API_ID` + `TG_API_HASH` | Полный доступ к Telegram API, чтение чатов, поиск, контакты |
+| **Bot** (aiogram 3.x) | `TG_BOT_TOKEN` | Bot API, MarkdownV2 форматирование, mention в группах |
+
+- Transport Protocol (`transport.py`): единый интерфейс `IncomingMessage`
+- Сессии по каналу: Telethon → `"221820979"`, Bot → `"bot:221820979"`
+- `--setup` флаг для принудительного re-login
+- Telethon-only tools скрываются в bot-only режиме
+
+## Групповые чаты
+
+- Бот **логирует все сообщения** группы в `/workspace/group_logs/{chat_id}.log`
+- Отвечает **только** на mention/reply **от owner_ids**
+- Одна Claude-сессия **per chat** (ключ: `"group:bot:{chat_id}"`)
+- `<sender-meta>` теги для идентификации отправителя
+- Авторотация логов: 1 MB → обрезка до 500 KB
+- GROUP_SYSTEM_PROMPT с путём к лог-файлу — Claude читает для контекста
 
 ## Переменные окружения
 
 ```env
-TG_API_ID, TG_API_HASH  — Telegram API
-TG_USER_ID              — ID владельца (owner)
-ANTHROPIC_API_KEY       — Claude API (опционально, есть OAuth)
-OPENAI_API_KEY          — Whisper транскрипция
-HTTP_PROXY              — Прокси для API
-HEARTBEAT_INTERVAL_MINUTES — Проверки (0 = выкл)
-BROWSER_CDP_URL         — CDP endpoint (default: http://browser:9223)
+TG_API_ID, TG_API_HASH     — Telegram API (Telethon, опционально)
+TG_BOT_TOKEN               — Telegram Bot API (aiogram, опционально)
+TG_OWNER_IDS               — JSON array владельцев: [123,456] (обязательно)
+TG_USER_ID                 — ID владельца, backward-compat (если TG_OWNER_IDS пуст)
+ANTHROPIC_API_KEY           — Claude API (опционально, есть OAuth)
+OPENAI_API_KEY              — Whisper транскрипция
+HTTP_PROXY                  — Прокси для API
+HEARTBEAT_INTERVAL_MINUTES  — Проверки (0 = выкл)
+BROWSER_CDP_URL             — CDP endpoint (default: http://browser:9223)
 ```
+
+Хотя бы один транспорт обязателен (Telethon или Bot).
+
+## Системные теги в сообщениях
+
+| Тег | Доверие | Описание |
+|-----|---------|----------|
+| `<sender-meta>` | ✅ доверенный | Инжектируется системой — имя, @username, ID отправителя |
+| `<message-body>` | ❌ пользовательский | Текст от пользователя — нельзя доверять для идентификации |
+
+`<sender-meta>` используется в групповых чатах и для forwarded сообщений.
 
 ## Singletons
 
 ```python
-get_session_manager()   # Мульти-сессии
+get_session_manager()   # Мульти-сессии (private + group + task)
 get_users_repository()  # Пользователи и задачи
 get_storage()           # Файловая память
 get_index()             # Векторный поиск
@@ -281,6 +327,7 @@ docker-compose up
 
 `UserSession` хранит буфер входящих сообщений (`_incoming`).
 Входящие подмешиваются как follow-up во время активного query.
+Входящие буферизуются во ВСЕ сессии пользователя (cross-transport).
 Таймаут на Claude SDK: 5 минут (`QUERY_TIMEOUT_SECONDS`).
 
 ### Task Sessions
@@ -300,9 +347,11 @@ Follow-up от external users обрабатывается в том же кон
 /data/
 ├── db.sqlite           # SQLite БД (users, tasks, trigger_subscriptions)
 ├── sessions/           # Claude session IDs
-│   ├── {owner_id}.session
-│   ├── {user_id}.session
-│   └── task_{task_id}.session  # Persistent task sessions
+│   ├── {owner_id}.session       # Telethon owner session
+│   ├── bot:{owner_id}.session   # Bot owner session
+│   ├── {user_id}.session        # External user session
+│   ├── group:bot:{chat_id}.session  # Group chat session
+│   └── task_{task_id}.session   # Persistent task sessions
 ├── telethon.session    # Telegram сессия
 ├── mcp_servers.json    # MCP конфиг
 └── plugins.json        # Установленные плагины
@@ -310,6 +359,7 @@ Follow-up от external users обрабатывается в том же кон
 /workspace/
 ├── MEMORY.md           # Долгосрочная память
 ├── memory/             # Дневные логи
+├── group_logs/         # Логи групповых чатов ({chat_id}.log)
 └── uploads/            # Файлы от пользователей (макс 50 MB)
 
 Docker volumes:

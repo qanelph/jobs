@@ -307,6 +307,11 @@ class TelegramHandlers:
         if media_context:
             prompt = f"{media_context}\n\n{prompt}" if prompt else media_context
 
+        # Пересланные сообщения — добавляем sender-meta с инфо об оригинальном авторе
+        fwd_meta = await self._extract_forward_meta(msg)
+        if fwd_meta:
+            prompt = f"{fwd_meta}\n{prompt}"
+
         logger.info(f"[{'owner' if is_owner else user_id}] Received: {prompt[:100]}...")
 
         # Обновляем инфо owner'а
@@ -441,8 +446,10 @@ class TelegramHandlers:
         # 5. Добавляем метаданные и оборачиваем
         now = datetime.now(tz=settings.get_timezone())
         time_meta = now.strftime("%d.%m.%Y %H:%M")
+        username_str = f" @{msg.sender_username}" if msg.sender_username else ""
+        sender_meta = f"<sender-meta>{msg.sender_display_name}{username_str} (ID: {msg.sender_id})</sender-meta>"
         prompt = _sanitize_tags(text)
-        prompt = f"[{time_meta}]\n<message-body>\n{prompt}\n</message-body>"
+        prompt = f"[{time_meta}]\n{sender_meta}\n<message-body>\n{prompt}\n</message-body>"
 
         # Включаем typing
         await transport.set_typing(msg.chat_id, typing=True)
@@ -666,6 +673,41 @@ class TelegramHandlers:
         }
 
         return tools_display.get(clean_name, "Работаю...")
+
+    @staticmethod
+    async def _extract_forward_meta(msg: IncomingMessage) -> str | None:
+        """Извлекает sender-meta из пересланного сообщения."""
+        raw = msg.raw
+
+        # Telethon: event.message.forward
+        if hasattr(raw, "message") and hasattr(raw.message, "forward") and raw.message.forward:
+            fwd = raw.message.forward
+            try:
+                sender = await fwd.get_sender()
+                if sender:
+                    name = f"{getattr(sender, 'first_name', '') or ''} {getattr(sender, 'last_name', '') or ''}".strip()
+                    uname = getattr(sender, "username", "") or ""
+                    uid = getattr(sender, "id", "")
+                    uname_str = f" @{uname}" if uname else ""
+                    return f"<sender-meta>Переслано от: {name}{uname_str} (ID: {uid})</sender-meta>"
+            except Exception:
+                pass
+            return "<sender-meta>Переслано от: скрытый профиль</sender-meta>"
+
+        # aiogram: Message.forward_from / forward_from_chat
+        if hasattr(raw, "forward_from") and raw.forward_from:
+            u = raw.forward_from
+            name = f"{u.first_name or ''} {u.last_name or ''}".strip()
+            uname_str = f" @{u.username}" if u.username else ""
+            return f"<sender-meta>Переслано от: {name}{uname_str} (ID: {u.id})</sender-meta>"
+        if hasattr(raw, "forward_from_chat") and raw.forward_from_chat:
+            chat = raw.forward_from_chat
+            uname_str = f" @{chat.username}" if chat.username else ""
+            return f"<sender-meta>Переслано из: {chat.title}{uname_str} (ID: {chat.id})</sender-meta>"
+        if hasattr(raw, "forward_sender_name") and raw.forward_sender_name:
+            return f"<sender-meta>Переслано от: {raw.forward_sender_name}</sender-meta>"
+
+        return None
 
     async def _extract_content(self, msg: IncomingMessage) -> tuple[str, str | None]:
         """

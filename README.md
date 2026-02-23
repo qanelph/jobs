@@ -291,11 +291,27 @@ Cross-session: отправляет запрос @masha
 
 ---
 
+## HTTP API
+
+Конфиг-API на порту 8080 — используется оркестратором (Jobsy) для remote management.
+
+```
+GET  /health          → {"status": "ok"}
+GET  /config          → все настройки + mutable флаг (секреты маскированы)
+PATCH /config         → partial update мутабельных полей
+```
+
+Авторизация: `Authorization: Bearer {JWT_SECRET_KEY}` (shared secret).
+Overrides сохраняются в `/data/config_overrides.json` и переживают рестарт контейнера.
+
+---
+
 ## Структура
 
 ```
 src/
 ├── main.py           # Точка входа
+├── api.py            # HTTP API (конфигурация, порт 8080)
 ├── config.py         # Настройки (TG_OWNER_IDS, транспорты)
 ├── setup.py          # Интерактивный setup (--setup)
 ├── heartbeat.py      # Проактивные проверки

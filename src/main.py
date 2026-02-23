@@ -7,9 +7,11 @@ Jobs — Personal AI Assistant.
 import asyncio
 import sys
 
+import uvicorn
 from loguru import logger
 
-from src.config import settings, set_owner_info
+from src.api import create_app
+from src.config import settings, set_owner_info, load_overrides
 from src.telegram.client import create_client, load_session_string
 from src.telegram.handlers import TelegramHandlers
 from src.telegram.tools import set_transports
@@ -48,6 +50,9 @@ def _has_telethon_session() -> bool:
 async def main() -> None:
     """Точка входа."""
     setup_logging()
+
+    # Загружаем config overrides из /data/config_overrides.json
+    load_overrides()
 
     force_setup = "--setup" in sys.argv
     if force_setup:
@@ -191,14 +196,22 @@ async def main() -> None:
 
     asyncio.create_task(_auto_check_updates())
 
+    # HTTP API (порт 8080 — для управления конфигом из оркестратора).
+    # 0.0.0.0 безопасен: слушает внутри Docker-сети агента,
+    # порт НЕ должен пробрасываться в docker-compose ports.
+    api_app = create_app()
+    api_config = uvicorn.Config(api_app, host="0.0.0.0", port=8080, log_level="warning")
+    api_server = uvicorn.Server(api_config)
+
     logger.info(f"Bot is running ({len(transports)} transport(s)). Send me a message!")
 
-    # Run transport loops параллельно
+    # Run transport loops + HTTP API параллельно
     loop_tasks = [asyncio.create_task(t.run_forever()) for t in transports]
+    loop_tasks.append(asyncio.create_task(api_server.serve()))
     try:
         await asyncio.gather(*loop_tasks)
     finally:
-        # Останавливаем транспорты
+        api_server.should_exit = True
         for t in transports:
             try:
                 await t.stop()

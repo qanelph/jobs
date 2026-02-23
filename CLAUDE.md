@@ -286,6 +286,26 @@ BROWSER_CDP_URL             — CDP endpoint (default: http://browser:9223)
 
 `<sender-meta>` используется в групповых чатах и для forwarded сообщений.
 
+## HTTP API (конфигурация)
+
+Порт 8080, авторизация: `Bearer {JWT_SECRET_KEY}` (shared secret с оркестратором).
+
+| Эндпоинт | Метод | Описание |
+|----------|-------|----------|
+| `/health` | GET | Health check (без авторизации) |
+| `/config` | GET | Все настройки (секреты маскированы) + флаг `mutable` |
+| `/config` | PATCH | Partial update мутабельных полей |
+
+**Mutable** (можно менять без рестарта):
+`claude_model`, `timezone`, `http_proxy`, `openai_api_key`
+
+**Immutable** (требуют respawn):
+`tg_api_id`, `tg_api_hash`, `tg_bot_token`, `tg_owner_ids`, `anthropic_api_key`, `heartbeat_interval_minutes`, `browser_cdp_url`, `data_dir`, `workspace_dir`
+
+Секреты в GET /config маскируются (4 символа слева + звёздочки + 4 справа), полные значения через API получить нельзя.
+
+**Персистентность:** overrides сохраняются в `/data/config_overrides.json`. При старте: env vars → load overrides → итоговый settings.
+
 ## Singletons
 
 ```python

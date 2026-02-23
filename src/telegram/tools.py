@@ -103,9 +103,6 @@ async def tg_send_message(args: dict[str, Any]) -> dict[str, Any]:
         return _error(f"Ошибка отправки: {e}")
 
 
-from telethon.tl.types import User, Channel, Chat
-
-
 @tool(
     "tg_send_media",
     "Send photo or video to any chat. Media_path is local file path.",
@@ -423,6 +420,8 @@ async def tg_search_messages(args: dict[str, Any]) -> dict[str, Any]:
 )
 async def tg_get_user_info(args: dict[str, Any]) -> dict[str, Any]:
     """Получает информацию о пользователе."""
+    from telethon.tl.types import User, Channel, Chat
+
     user = args.get("user")
 
     if not user:
@@ -479,6 +478,8 @@ async def tg_get_user_info(args: dict[str, Any]) -> dict[str, Any]:
 )
 async def tg_get_dialogs(args: dict[str, Any]) -> dict[str, Any]:
     """Получает список диалогов."""
+    from telethon.tl.types import User, Channel, Chat
+
     limit = args.get("limit", 30)
     limit = min(limit, 100)
 
@@ -666,6 +667,8 @@ def get_available_telegram_tool_names() -> list[str]:
 
 def _format_sender(sender) -> str:
     """Форматирует отправителя (краткий вариант)."""
+    from telethon.tl.types import User, Channel
+
     if sender is None:
         return "Unknown"
     if isinstance(sender, User):
@@ -678,6 +681,8 @@ def _format_sender(sender) -> str:
 
 def _format_sender_detailed(sender) -> str:
     """Форматирует отправителя с ID и username."""
+    from telethon.tl.types import User, Channel
+
     if sender is None:
         return "Unknown"
 

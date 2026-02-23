@@ -189,10 +189,16 @@ async def main() -> None:
     logger.info(f"Bot is running ({len(transports)} transport(s)). Send me a message!")
 
     # Run transport loops параллельно
-    tasks = [asyncio.create_task(t.run_forever()) for t in transports]
+    loop_tasks = [asyncio.create_task(t.run_forever()) for t in transports]
     try:
-        await asyncio.gather(*tasks)
+        await asyncio.gather(*loop_tasks)
     finally:
+        # Останавливаем транспорты
+        for t in transports:
+            try:
+                await t.stop()
+            except Exception as e:
+                logger.error(f"Transport stop error: {e}")
         await trigger_manager.stop_all()
 
 

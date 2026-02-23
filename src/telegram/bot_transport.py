@@ -12,6 +12,7 @@ from typing import Any
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, FSInputFile
 from aiogram.enums import ChatAction
+from aiogram.exceptions import TelegramBadRequest
 from loguru import logger
 
 from src.telegram.transport import (
@@ -48,7 +49,7 @@ class BotTransport:
     async def send_message(self, chat_id: int, text: str) -> int:
         try:
             result = await self._bot.send_message(chat_id, text, parse_mode="Markdown")
-        except Exception:
+        except TelegramBadRequest:
             result = await self._bot.send_message(chat_id, text)
         return result.message_id
 
@@ -60,7 +61,7 @@ class BotTransport:
                 reply_to_message_id=msg.message_id,
                 parse_mode="Markdown",
             )
-        except Exception:
+        except TelegramBadRequest:
             result = await self._bot.send_message(
                 msg.chat_id,
                 text,
@@ -81,7 +82,7 @@ class BotTransport:
             await self._bot.edit_message_text(
                 text, chat_id=chat_id, message_id=msg_id, parse_mode="Markdown",
             )
-        except Exception:
+        except TelegramBadRequest:
             try:
                 await self._bot.edit_message_text(text, chat_id=chat_id, message_id=msg_id)
             except Exception as e:

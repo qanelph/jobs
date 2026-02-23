@@ -35,7 +35,7 @@ def _safe_parse_message(data: dict) -> object | None:
         return _original_parse_message(data)
     except Exception as exc:
         if "Unknown message type" in str(exc):
-            logger.debug(f"SDK: skipping unknown message type: {exc}")
+            logger.warning(f"SDK: skipping unknown message type: {exc}")
             return None
         raise
 
@@ -525,6 +525,14 @@ class SessionManager:
 
     def get_owner_session(self) -> UserSession:
         return self.get_session(settings.tg_user_id)
+
+    def get_user_sessions(self, telegram_id: int) -> list[UserSession]:
+        """Все активные сессии пользователя (по всем транспортам)."""
+        suffix = str(telegram_id)
+        return [
+            s for key, s in self._sessions.items()
+            if key == suffix or key.endswith(f":{suffix}")
+        ]
 
     def create_background_session(self) -> UserSession:
         """Создаёт одноразовую сессию с owner tools для scheduler/triggers."""

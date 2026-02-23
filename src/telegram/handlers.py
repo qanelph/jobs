@@ -151,36 +151,46 @@ class TelegramHandlers:
 
         session_manager = get_session_manager()
 
-        # Всегда создаём/получаем сессию получателя (get_session идемпотентен)
-        recipient = session_manager.get_session(user_id)
-        recipient.receive_incoming(text)
-        logger.info(f"Buffered for [{user_id}], buffer size: {len(recipient._incoming)}")
+        # Буферизуем во ВСЕ сессии получателя (Telethon + Bot)
+        sessions = session_manager.get_user_sessions(user_id)
+        if not sessions:
+            # Создаём дефолтную сессию если нет ни одной
+            sessions = [session_manager.get_session(user_id)]
+        for s in sessions:
+            s.receive_incoming(text)
+        logger.info(f"Buffered for [{user_id}] in {len(sessions)} session(s)")
 
-        # Если получатель — owner и он не в активном запросе, запускаем автономный query
+        # Если получатель — owner и ни одна сессия не занята, запускаем автономный query
         if user_id == settings.tg_user_id:
-            is_querying = recipient._is_querying
-            logger.info(f"Owner is recipient, is_querying={is_querying}")
-            if not is_querying:
+            any_querying = any(s._is_querying for s in sessions)
+            logger.info(f"Owner is recipient, any_querying={any_querying}")
+            if not any_querying:
                 logger.info("Triggering autonomous query for owner")
                 asyncio.create_task(self._process_incoming(user_id))
 
     async def _inject_to_context(self, user_id: int, text: str) -> None:
         """Инжектит сообщение в контекст сессии + триггерит autonomous query."""
         session_manager = get_session_manager()
-        recipient = session_manager.get_session(user_id)
-        recipient.receive_incoming(text)
-        logger.info(f"Injected to context [{user_id}], buffer: {len(recipient._incoming)}")
+        sessions = session_manager.get_user_sessions(user_id)
+        if not sessions:
+            sessions = [session_manager.get_session(user_id)]
+        for s in sessions:
+            s.receive_incoming(text)
+        logger.info(f"Injected to context [{user_id}] in {len(sessions)} session(s)")
 
         if user_id == settings.tg_user_id:
-            if not recipient._is_querying:
+            if not any(s._is_querying for s in sessions):
                 asyncio.create_task(self._process_incoming(user_id))
 
     async def _buffer_to_context(self, user_id: int, text: str) -> None:
         """Тихая буферизация в контекст без autonomous query trigger."""
         session_manager = get_session_manager()
-        recipient = session_manager.get_session(user_id)
-        recipient.receive_incoming(text)
-        logger.info(f"Buffered to context [{user_id}], buffer: {len(recipient._incoming)}")
+        sessions = session_manager.get_user_sessions(user_id)
+        if not sessions:
+            sessions = [session_manager.get_session(user_id)]
+        for s in sessions:
+            s.receive_incoming(text)
+        logger.info(f"Buffered to context [{user_id}] in {len(sessions)} session(s)")
 
     async def _process_incoming(self, user_id: int) -> None:
         """Автономный query для обработки входящих сообщений."""

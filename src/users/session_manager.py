@@ -510,6 +510,10 @@ class SessionManager:
             display_name = user_display_name or str(telegram_id)
             system_prompt = self._get_external_prompt(telegram_id, display_name)
 
+        if channel == "bot":
+            from src.users.prompts import BOT_FORMATTING_SUFFIX
+            system_prompt += BOT_FORMATTING_SUFFIX
+
         session = UserSession(
             telegram_id=telegram_id,
             session_dir=self._session_dir,

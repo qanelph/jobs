@@ -5,6 +5,7 @@ BotTransport — aiogram 3.x реализация Transport Protocol.
 from __future__ import annotations
 
 import asyncio
+import re
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,90 @@ from src.telegram.transport import (
     IncomingMessage,
     MessageCallback,
 )
+
+
+_MDV2_ESCAPE_RE = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
+_CODE_BLOCK_RE = re.compile(r"```(\w*)\n?(.*?)```", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+_ITALIC_RE = re.compile(r"(?<!\w)\*([^*\n]+?)\*(?!\w)")
+_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+
+
+def _escape_mdv2(text: str) -> str:
+    """Экранирует спецсимволы MarkdownV2."""
+    return _MDV2_ESCAPE_RE.sub(r"\\\1", text)
+
+
+def _md_to_v2(text: str) -> str:
+    """Конвертирует стандартный Markdown в Telegram MarkdownV2."""
+    # 1. Извлекаем code blocks (внутри не экранируем)
+    blocks: list[str] = []
+
+    def _save_block(m: re.Match) -> str:
+        lang = m.group(1) or ""
+        code = m.group(2)
+        blocks.append(f"```{lang}\n{code}```")
+        return f"\x00BLOCK{len(blocks) - 1}\x00"
+
+    text = _CODE_BLOCK_RE.sub(_save_block, text)
+
+    # 2. Извлекаем inline code
+    inlines: list[str] = []
+
+    def _save_inline(m: re.Match) -> str:
+        inlines.append(f"`{m.group(1)}`")
+        return f"\x00INLINE{len(inlines) - 1}\x00"
+
+    text = _INLINE_CODE_RE.sub(_save_inline, text)
+
+    # 3. Извлекаем links: [text](url)
+    links: list[str] = []
+
+    def _save_link(m: re.Match) -> str:
+        link_text = _escape_mdv2(m.group(1))
+        url = m.group(2).replace("\\", "\\\\").replace(")", "\\)")
+        links.append(f"[{link_text}]({url})")
+        return f"\x00LINK{len(links) - 1}\x00"
+
+    text = _LINK_RE.sub(_save_link, text)
+
+    # 4. Bold: **text** → *text* (MarkdownV2 bold = одна звёздочка)
+    bolds: list[str] = []
+
+    def _save_bold(m: re.Match) -> str:
+        content = _escape_mdv2(m.group(1))
+        bolds.append(f"*{content}*")
+        return f"\x00BOLD{len(bolds) - 1}\x00"
+
+    text = _BOLD_RE.sub(_save_bold, text)
+
+    # 5. Italic: *text* → _text_ (MarkdownV2 italic = подчёркивание)
+    italics: list[str] = []
+
+    def _save_italic(m: re.Match) -> str:
+        content = _escape_mdv2(m.group(1))
+        italics.append(f"_{content}_")
+        return f"\x00ITALIC{len(italics) - 1}\x00"
+
+    text = _ITALIC_RE.sub(_save_italic, text)
+
+    # 6. Экранируем весь оставшийся текст
+    text = _escape_mdv2(text)
+
+    # 7. Восстанавливаем placeholder'ы (содержат \x00 + буквы + цифры — не экранируются)
+    for i, b in enumerate(bolds):
+        text = text.replace(f"\x00BOLD{i}\x00", b)
+    for i, it in enumerate(italics):
+        text = text.replace(f"\x00ITALIC{i}\x00", it)
+    for i, lnk in enumerate(links):
+        text = text.replace(f"\x00LINK{i}\x00", lnk)
+    for i, il in enumerate(inlines):
+        text = text.replace(f"\x00INLINE{i}\x00", il)
+    for i, bl in enumerate(blocks):
+        text = text.replace(f"\x00BLOCK{i}\x00", bl)
+
+    return text
 
 
 class BotTransport:
@@ -48,7 +133,7 @@ class BotTransport:
 
     async def send_message(self, chat_id: int, text: str) -> int:
         try:
-            result = await self._bot.send_message(chat_id, text, parse_mode="Markdown")
+            result = await self._bot.send_message(chat_id, _md_to_v2(text), parse_mode="MarkdownV2")
         except TelegramBadRequest:
             result = await self._bot.send_message(chat_id, text)
         return result.message_id
@@ -57,9 +142,9 @@ class BotTransport:
         try:
             result = await self._bot.send_message(
                 msg.chat_id,
-                text,
+                _md_to_v2(text),
                 reply_to_message_id=msg.message_id,
-                parse_mode="Markdown",
+                parse_mode="MarkdownV2",
             )
         except TelegramBadRequest:
             result = await self._bot.send_message(
@@ -80,7 +165,7 @@ class BotTransport:
     ) -> None:
         try:
             await self._bot.edit_message_text(
-                text, chat_id=chat_id, message_id=msg_id, parse_mode="Markdown",
+                _md_to_v2(text), chat_id=chat_id, message_id=msg_id, parse_mode="MarkdownV2",
             )
         except TelegramBadRequest:
             try:

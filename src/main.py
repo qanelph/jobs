@@ -149,7 +149,7 @@ async def main() -> None:
     # Unified Trigger System
     session_manager = get_session_manager()
     executor = TriggerExecutor(primary, session_manager)
-    trigger_manager = TriggerManager(executor, primary, str(settings.db_path))
+    trigger_manager = TriggerManager(executor, primary, str(settings.data_dir / "triggers.sqlite"))
 
     # Регистрируем типы динамических триггеров (только если Telethon)
     if telethon_transport:

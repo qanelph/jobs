@@ -5,8 +5,11 @@ Jobs — Personal AI Assistant.
 """
 
 import asyncio
+import json
+import os
 import sys
 
+import httpx
 import uvicorn
 from loguru import logger
 
@@ -48,12 +51,57 @@ def _has_telethon_session() -> bool:
     return session is not None and len(session) > 0
 
 
+async def _pull_credentials_on_start() -> None:
+    """Запрос credentials у оркестратора при старте (K8s mode).
+
+    GET {ORCHESTRATOR_URL}/claude-auth/credentials → записывает .credentials.json.
+    Retry 3 попытки с паузой 2с. Если ORCHESTRATOR_URL не задан — skip.
+    """
+    orchestrator_url = os.environ.get("ORCHESTRATOR_URL", "")
+    jwt_secret = os.environ.get("JWT_SECRET_KEY", "")
+    if not orchestrator_url or not jwt_secret:
+        return
+
+    url = f"{orchestrator_url.rstrip('/')}/claude-auth/credentials"
+    headers = {"Authorization": f"Bearer {jwt_secret}"}
+    creds_path = settings.claude_dir / ".credentials.json"
+
+    for attempt in range(1, 4):
+        try:
+            async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
+                resp = await client.get(url, headers=headers)
+            if resp.status_code != 200:
+                logger.warning(f"Credentials pull attempt {attempt}: HTTP {resp.status_code}")
+                await asyncio.sleep(2)
+                continue
+
+            data = resp.json()
+            credentials = data.get("credentials")
+            if not credentials:
+                logger.info("Credentials pull: no credentials configured on orchestrator")
+                return
+
+            creds_path.parent.mkdir(parents=True, exist_ok=True)
+            creds_path.write_text(json.dumps(credentials, indent=2))
+            logger.info("Credentials pulled successfully from orchestrator")
+            return
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            logger.warning(f"Credentials pull attempt {attempt}: {exc}")
+            if attempt < 3:
+                await asyncio.sleep(2)
+
+    logger.warning("Credentials pull failed after 3 attempts — agent may lack OAuth tokens")
+
+
 async def main() -> None:
     """Точка входа."""
     setup_logging()
 
     # Загружаем config overrides из /data/config_overrides.json
     load_overrides()
+
+    # Pull credentials от оркестратора (K8s: Secret не используется, pull при старте)
+    await _pull_credentials_on_start()
 
     force_setup = "--setup" in sys.argv
     if force_setup:

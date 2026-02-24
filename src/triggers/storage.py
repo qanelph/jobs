@@ -1,12 +1,13 @@
 """
 TriggerStorage — SQLite хранилище подписок.
 
-Своё подключение к db.sqlite (WAL mode, безопасно для concurrent access).
+Отдельный файл triggers.sqlite (избегает WAL lock race с UsersRepository).
 """
 
 import asyncio
 import json
 import uuid
+from pathlib import Path
 from datetime import datetime
 
 import aiosqlite
@@ -54,7 +55,44 @@ class TriggerStorage:
             )
         """)
         await db.commit()
+        await self._migrate_from_old_db()
         logger.debug("TriggerStorage schema initialized")
+
+    async def _migrate_from_old_db(self) -> None:
+        """Переносит подписки из старого db.sqlite (если есть) в triggers.sqlite."""
+        old_db_path = Path(self._db_path).parent / "db.sqlite"
+        if not old_db_path.exists() or str(old_db_path) == self._db_path:
+            return
+
+        old_db = await aiosqlite.connect(str(old_db_path))
+        old_db.row_factory = aiosqlite.Row
+        try:
+            cursor = await old_db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='trigger_subscriptions'"
+            )
+            if not await cursor.fetchone():
+                return
+
+            cursor = await old_db.execute("SELECT * FROM trigger_subscriptions")
+            rows = await cursor.fetchall()
+            if not rows:
+                await old_db.execute("DROP TABLE trigger_subscriptions")
+                await old_db.commit()
+                return
+
+            db = self._db
+            for row in rows:
+                await db.execute(
+                    "INSERT OR IGNORE INTO trigger_subscriptions (id, trigger_type, config, prompt, active, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (row["id"], row["trigger_type"], row["config"], row["prompt"], row["active"], row["created_at"]),
+                )
+            await db.commit()
+            await old_db.execute("DROP TABLE trigger_subscriptions")
+            await old_db.commit()
+            logger.info(f"Migrated {len(rows)} trigger subscriptions from db.sqlite")
+        finally:
+            await old_db.close()
 
     async def list_active(self) -> list[TriggerSubscription]:
         """Возвращает все активные подписки."""

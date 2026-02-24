@@ -1,7 +1,7 @@
 """
 TriggerStorage — SQLite хранилище подписок.
 
-Своё подключение к db.sqlite (WAL mode, безопасно для concurrent access).
+Отдельный файл triggers.sqlite (избегает WAL lock race с UsersRepository).
 """
 
 import asyncio

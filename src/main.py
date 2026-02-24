@@ -23,6 +23,7 @@ from src.memory import get_storage
 from src.heartbeat import HeartbeatRunner
 from src.triggers import TriggerExecutor, TriggerManager, set_trigger_manager
 from src.triggers.sources.tg_channel import TelegramChannelTrigger
+from src.migrations import run_migrations
 from src.updater import Updater, AUTO_CHECK_INTERVAL
 
 
@@ -66,6 +67,9 @@ async def main() -> None:
     apply_sdk_patches()
 
     logger.info("Starting Jobs - Personal AI Assistant")
+
+    # Миграции (до инициализации компонентов)
+    await run_migrations(settings.data_dir)
 
     # Инициализируем память (создаёт структуру файлов)
     memory_storage = get_storage()
@@ -149,7 +153,7 @@ async def main() -> None:
     # Unified Trigger System
     session_manager = get_session_manager()
     executor = TriggerExecutor(primary, session_manager)
-    trigger_manager = TriggerManager(executor, primary, str(settings.db_path))
+    trigger_manager = TriggerManager(executor, primary, str(settings.data_dir / "triggers.sqlite"))
 
     # Регистрируем типы динамических триггеров (только если Telethon)
     if telethon_transport:

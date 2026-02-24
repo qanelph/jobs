@@ -599,6 +599,9 @@ class SessionManager:
             log_path=get_log_path(chat_id),
         )
 
+        if settings.custom_instructions.strip():
+            system_prompt += f"\n\n## Дополнительные инструкции от владельца\n\n{settings.custom_instructions.strip()}"
+
         if channel == "bot":
             system_prompt += BOT_FORMATTING_SUFFIX
 

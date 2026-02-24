@@ -27,7 +27,7 @@ from src.telegram.transport import Transport, TransportMode, IncomingMessage
 from src.telegram import group_log
 
 MAX_TG_LENGTH = 4000
-TYPING_REFRESH_INTERVAL = 3.0
+TYPING_REFRESH_INTERVAL = 4.0  # Bot API typing expires after 5s
 LOADING_EMOJI_ID = 5255778087437617493
 MAX_DONE_LENGTH = 200
 
@@ -37,6 +37,37 @@ _SYSTEM_TAGS_RE = re.compile(r'<\s*/?(?:message-body|sender-meta)\s*/?\s*>', re.
 def _sanitize_tags(text: str) -> str:
     """Удаляет системные теги из пользовательского ввода."""
     return _SYSTEM_TAGS_RE.sub('', text)
+
+
+class TypingLoop:
+    """Фоновый цикл typing — шлёт chat action каждые N секунд до остановки."""
+
+    def __init__(self, transport: Transport, chat_id: int) -> None:
+        self._transport = transport
+        self._chat_id = chat_id
+        self._task: asyncio.Task | None = None
+
+    def start(self) -> None:
+        if self._task is None:
+            self._task = asyncio.create_task(self._loop())
+
+    async def stop(self) -> None:
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+        await self._transport.set_typing(self._chat_id, typing=False)
+
+    async def _loop(self) -> None:
+        try:
+            while True:
+                await self._transport.set_typing(self._chat_id, typing=True)
+                await asyncio.sleep(TYPING_REFRESH_INTERVAL)
+        except asyncio.CancelledError:
+            pass
 
 
 class StatusTracker:
@@ -339,9 +370,6 @@ class TelegramHandlers:
         # Отмечаем как прочитанное
         await transport.mark_read(msg.chat_id, msg.message_id)
 
-        # Включаем typing
-        await transport.set_typing(msg.chat_id, typing=True)
-
         # Получаем сессию для этого пользователя + транспорта
         session_manager = get_session_manager()
         user_display_name = msg.sender_first_name or msg.sender_username or str(user_id)
@@ -354,7 +382,8 @@ class TelegramHandlers:
             logger.info(f"[{'owner' if is_owner else user_id}] Buffered (session busy), queue: {len(session._incoming)}")
             return
 
-        last_typing = asyncio.get_event_loop().time()
+        typing = TypingLoop(transport, msg.chat_id)
+        typing.start()
         status = StatusTracker(transport, msg, await self._check_premium(transport))
 
         try:
@@ -363,13 +392,12 @@ class TelegramHandlers:
                 new_msg = self._reply_targets.pop(session_key, None)
                 if new_msg:
                     await status.delete()
+                    await typing.stop()
                     msg = new_msg
+                    transport = new_msg.transport
+                    typing = TypingLoop(transport, msg.chat_id)
+                    typing.start()
                     status = StatusTracker(new_msg.transport, new_msg, await self._check_premium(new_msg.transport))
-
-                now_time = asyncio.get_event_loop().time()
-                if now_time - last_typing > TYPING_REFRESH_INTERVAL:
-                    await transport.set_typing(msg.chat_id, typing=True)
-                    last_typing = now_time
 
                 if tool_name:
                     await status.set_active(self._format_tool(tool_name))
@@ -389,7 +417,7 @@ class TelegramHandlers:
             await transport.reply(msg, f"Ошибка: {e}")
 
         finally:
-            await transport.set_typing(msg.chat_id, typing=False)
+            await typing.stop()
             await status.delete()
 
     async def _on_group_message(self, msg: IncomingMessage) -> None:
@@ -465,19 +493,12 @@ class TelegramHandlers:
             logger.info(f"[group:{msg.chat_id}] Buffered (session busy), queue: {len(session._incoming)}")
             return
 
-        # Включаем typing
-        await transport.set_typing(msg.chat_id, typing=True)
-
-        last_typing = asyncio.get_event_loop().time()
+        typing = TypingLoop(transport, msg.chat_id)
+        typing.start()
         status = StatusTracker(transport, msg, await self._check_premium(transport))
 
         try:
             async for response_text, tool_name, is_final in session.query_stream(prompt):
-                now_time = asyncio.get_event_loop().time()
-                if now_time - last_typing > TYPING_REFRESH_INTERVAL:
-                    await transport.set_typing(msg.chat_id, typing=True)
-                    last_typing = now_time
-
                 if tool_name:
                     await status.set_active(self._format_tool(tool_name))
                 elif response_text and not is_final:
@@ -496,7 +517,7 @@ class TelegramHandlers:
             await transport.reply(msg, f"Ошибка: {e}")
 
         finally:
-            await transport.set_typing(msg.chat_id, typing=False)
+            await typing.stop()
             await status.delete()
 
     async def _check_premium(self, transport: Transport) -> bool:

@@ -6,6 +6,7 @@ Jobs HTTP API — конфигурация агента.
 
 import asyncio
 import hmac
+import json
 import os
 import types
 from pathlib import Path
@@ -77,6 +78,12 @@ def _mask(value: str | None) -> str:
     if len(value) <= 8:
         return "****"
     return value[:4] + "*" * (len(value) - 8) + value[-4:]
+
+
+class UpdateCredentials(BaseModel):
+    """Push обновлённых OAuth credentials от оркестратора."""
+
+    credentials: dict[str, Any]
 
 
 class PatchConfig(BaseModel):
@@ -153,5 +160,17 @@ def create_app() -> FastAPI:
             save_overrides(current)
 
         return _build_config_response()
+
+    @app.post("/credentials")
+    async def update_credentials(
+        body: UpdateCredentials,
+        authorization: str = Header(...),
+    ) -> dict[str, str]:
+        """Push обновлённых OAuth credentials от оркестратора."""
+        _verify_secret(authorization)
+        creds_path = settings.claude_dir / ".credentials.json"
+        creds_path.parent.mkdir(parents=True, exist_ok=True)
+        creds_path.write_text(json.dumps(body.credentials, indent=2))
+        return {"status": "ok"}
 
     return app

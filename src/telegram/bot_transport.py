@@ -4,15 +4,22 @@ BotTransport — aiogram 3.x реализация Transport Protocol.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.session.middlewares.base import (
+    BaseRequestMiddleware,
+    NextRequestMiddlewareType,
+)
+from aiogram.methods import TelegramMethod
+from aiogram.methods.base import TelegramType, Response
 from aiogram.types import Message, FSInputFile
 from aiogram.enums import ChatAction
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from loguru import logger
 
 from src.telegram.transport import (
@@ -107,6 +114,28 @@ def _md_to_v2(text: str) -> str:
     return text
 
 
+class _RetryOnFloodMiddleware(BaseRequestMiddleware):
+    """Auto-retry при Telegram flood control (retry_after)."""
+
+    MAX_RETRIES = 2
+
+    async def __call__(
+        self,
+        make_request: NextRequestMiddlewareType[TelegramType],
+        bot: Bot,
+        method: TelegramMethod[TelegramType],
+    ) -> Response[TelegramType]:
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                return await make_request(bot, method)
+            except TelegramRetryAfter as e:
+                if attempt == self.MAX_RETRIES - 1:
+                    raise
+                logger.warning(f"Flood control: retry in {e.retry_after}s ({type(method).__name__})")
+                await asyncio.sleep(e.retry_after)
+        return await make_request(bot, method)
+
+
 class BotTransport:
     """Transport на базе aiogram Bot API."""
 
@@ -114,6 +143,7 @@ class BotTransport:
 
     def __init__(self, token: str) -> None:
         self._bot = Bot(token=token)
+        self._bot.session.middleware(_RetryOnFloodMiddleware())
         self._dp = Dispatcher()
         self._running = False
         self._me_id: int = 0
@@ -146,6 +176,7 @@ class BotTransport:
                 msg.chat_id,
                 _md_to_v2(text),
                 reply_to_message_id=msg.message_id,
+                message_thread_id=msg.message_thread_id,
                 parse_mode="MarkdownV2",
             )
         except TelegramBadRequest:
@@ -153,6 +184,7 @@ class BotTransport:
                 msg.chat_id,
                 text,
                 reply_to_message_id=msg.message_id,
+                message_thread_id=msg.message_thread_id,
             )
         return result.message_id
 
@@ -181,11 +213,11 @@ class BotTransport:
         except Exception as e:
             logger.debug(f"Delete message error: {e}")
 
-    async def set_typing(self, chat_id: int, typing: bool) -> None:
+    async def set_typing(self, chat_id: int, typing: bool, message_thread_id: int | None = None) -> None:
         if not typing:
             return  # Bot API: typing auto-expires after 5s, no cancel
         try:
-            await self._bot.send_chat_action(chat_id, ChatAction.TYPING)
+            await self._bot.send_chat_action(chat_id, ChatAction.TYPING, message_thread_id=message_thread_id)
         except Exception as e:
             logger.debug(f"Typing action error: {e}")
 
@@ -290,6 +322,7 @@ class BotTransport:
                 document_name=doc_name,
                 document_size=doc_size,
                 reply_to_message_id=reply_to_message_id,
+                message_thread_id=message.message_thread_id,
                 is_bot_mentioned=is_bot_mentioned,
                 is_reply_to_bot=is_reply_to_bot,
                 sender_display_name=display_name,

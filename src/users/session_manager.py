@@ -180,9 +180,11 @@ class UserSession:
             plugin_config = get_plugin_config()
             plugins = plugin_config.to_sdk_format()
 
+        workspace = Path(settings.workspace_dir)
         options = ClaudeAgentOptions(
             model=settings.claude_model,
-            cwd=Path(settings.workspace_dir),
+            cwd=workspace,
+            add_dirs=[workspace],
             permission_mode=permission_mode,
             env=env,
             mcp_servers=mcp_servers,
@@ -198,13 +200,25 @@ class UserSession:
 
         return options
 
+    @staticmethod
+    def _stderr_handler(line: str) -> None:
+        """Логирует stderr от Claude Code CLI."""
+        logger.debug(f"claude-cli stderr: {line}")
+
     async def _create_client(self) -> ClaudeSDKClient:
         """Создаёт и подключает новый клиент."""
         options = self._build_options()
+        options.stderr = self._stderr_handler
         client = ClaudeSDKClient(options=options)
         await client.connect()
         logger.debug(f"Client connected [{self.telegram_id}]")
         return client
+
+    def _reset_stale_session(self) -> None:
+        """Сбрасывает session_id и удаляет файл сессии."""
+        logger.warning(f"Resetting stale session [{self.telegram_id}]: {self._session_id}")
+        self._session_id = None
+        self._session_file.unlink(missing_ok=True)
 
     async def _destroy_client(self, client: ClaudeSDKClient) -> None:
         """Отключает и уничтожает клиент."""
@@ -228,32 +242,47 @@ class UserSession:
         full_prompt = "\n".join(parts)
 
         text_parts: list[str] = []
+        had_session = bool(self._session_id)
+        client: ClaudeSDKClient | None = None
 
         async with self._query_lock:
             self._is_querying = True
-            client = await self._create_client()
-            self._client = client
 
             try:
                 async with asyncio.timeout(QUERY_TIMEOUT_SECONDS):
-                    await client.query(full_prompt)
-                    interrupted = False
+                    for attempt in range(2):
+                        try:
+                            client = await self._create_client()
+                            self._client = client
+                            await client.query(full_prompt)
+                            interrupted = False
 
-                    async for message in client.receive_response():
-                        if message is None:
-                            continue
-                        if isinstance(message, AssistantMessage):
-                            for block in message.content:
-                                if isinstance(block, TextBlock):
-                                    text_parts.append(block.text)
-                        elif isinstance(message, ResultMessage):
-                            if message.session_id:
-                                self._save_session_id(message.session_id)
+                            async for message in client.receive_response():
+                                if message is None:
+                                    continue
+                                if isinstance(message, AssistantMessage):
+                                    for block in message.content:
+                                        if isinstance(block, TextBlock):
+                                            text_parts.append(block.text)
+                                elif isinstance(message, ResultMessage):
+                                    if message.session_id:
+                                        self._save_session_id(message.session_id)
 
-                        if not interrupted and self._incoming:
-                            await client.interrupt()
-                            interrupted = True
-                            logger.debug(f"Interrupted response [{self.telegram_id}]")
+                                if not interrupted and self._incoming:
+                                    await client.interrupt()
+                                    interrupted = True
+                                    logger.debug(f"Interrupted response [{self.telegram_id}]")
+                            break  # success
+
+                        except Exception as e:
+                            if client:
+                                await self._destroy_client(client)
+                                client = None
+                            if attempt == 0 and had_session and not text_parts:
+                                logger.warning(f"Resume failed [{self.telegram_id}], retrying: {e}")
+                                self._reset_stale_session()
+                                continue
+                            raise
 
                     # Follow-up для входящих, накопившихся во время запроса
                     while self._incoming:
@@ -292,7 +321,8 @@ class UserSession:
             finally:
                 self._is_querying = False
                 self._client = None
-                await self._destroy_client(client)
+                if client:
+                    await self._destroy_client(client)
                 await get_session_manager()._execute_pending_reset()
 
         return text_parts[-1] if text_parts else "Нет ответа"
@@ -325,37 +355,52 @@ class UserSession:
         full_prompt = "\n".join(parts)
 
         text_buffer: list[str] = []
+        had_session = bool(self._session_id)
+        client: ClaudeSDKClient | None = None
 
         await self._query_lock.acquire()
         self._is_querying = True
-        client = await self._create_client()
-        self._client = client
 
         try:
             async with asyncio.timeout(QUERY_TIMEOUT_SECONDS):
-                await client.query(full_prompt)
-                interrupted = False
+                for attempt in range(2):
+                    try:
+                        client = await self._create_client()
+                        self._client = client
+                        await client.query(full_prompt)
+                        interrupted = False
 
-                async for message in client.receive_response():
-                    if message is None:
-                        continue
-                    if isinstance(message, AssistantMessage):
-                        for block in message.content:
-                            if isinstance(block, TextBlock):
-                                text_buffer.append(block.text)
-                                yield (block.text, None, False)
-                            elif isinstance(block, ToolUseBlock):
-                                tool_display = self._format_tool_display(block)
-                                yield (None, tool_display, False)
+                        async for message in client.receive_response():
+                            if message is None:
+                                continue
+                            if isinstance(message, AssistantMessage):
+                                for block in message.content:
+                                    if isinstance(block, TextBlock):
+                                        text_buffer.append(block.text)
+                                        yield (block.text, None, False)
+                                    elif isinstance(block, ToolUseBlock):
+                                        tool_display = self._format_tool_display(block)
+                                        yield (None, tool_display, False)
 
-                    elif isinstance(message, ResultMessage):
-                        if message.session_id:
-                            self._save_session_id(message.session_id)
+                            elif isinstance(message, ResultMessage):
+                                if message.session_id:
+                                    self._save_session_id(message.session_id)
 
-                    if not interrupted and self._incoming:
-                        await client.interrupt()
-                        interrupted = True
-                        logger.debug(f"Interrupted response [{self.telegram_id}]")
+                            if not interrupted and self._incoming:
+                                await client.interrupt()
+                                interrupted = True
+                                logger.debug(f"Interrupted response [{self.telegram_id}]")
+                        break  # success
+
+                    except Exception as e:
+                        if client:
+                            await self._destroy_client(client)
+                            client = None
+                        if attempt == 0 and had_session and not text_buffer:
+                            logger.warning(f"Resume failed [{self.telegram_id}], retrying: {e}")
+                            self._reset_stale_session()
+                            continue
+                        raise
 
                 # Follow-up для входящих, накопившихся во время запроса
                 while self._incoming:
@@ -404,7 +449,8 @@ class UserSession:
         finally:
             self._is_querying = False
             self._client = None
-            await self._destroy_client(client)
+            if client:
+                await self._destroy_client(client)
             await get_session_manager()._execute_pending_reset()
             self._query_lock.release()
 

@@ -293,6 +293,7 @@ class UserSession:
                 self._is_querying = False
                 self._client = None
                 await self._destroy_client(client)
+                await get_session_manager()._execute_pending_reset()
 
         return text_parts[-1] if text_parts else "Нет ответа"
 
@@ -404,6 +405,7 @@ class UserSession:
             self._is_querying = False
             self._client = None
             await self._destroy_client(client)
+            await get_session_manager()._execute_pending_reset()
             self._query_lock.release()
 
     async def destroy(self) -> None:
@@ -436,9 +438,9 @@ class SessionManager:
         self._sessions: dict[str, UserSession] = {}
         self._task_sessions: dict[str, UserSession] = {}
         self._ephemeral_counter: int = 0
+        self._pending_reset: bool = False
 
         self._owner_prompt: str | None = None
-        self._external_prompt_template: str | None = None
 
     @staticmethod
     def _make_key(telegram_id: int, channel: str | None = None) -> str:
@@ -449,14 +451,14 @@ class SessionManager:
 
     def _get_owner_prompt(self) -> str:
         if self._owner_prompt is None:
-            from src.users.prompts import OWNER_SYSTEM_PROMPT
-            self._owner_prompt = OWNER_SYSTEM_PROMPT
+            from src.users.prompts import build_owner_prompt
+            from src.telegram.tools import has_telethon
+            self._owner_prompt = build_owner_prompt(has_telethon())
         return self._owner_prompt
 
     def _get_external_prompt(self, telegram_id: int, user_display_name: str) -> str:
-        if self._external_prompt_template is None:
-            from src.users.prompts import EXTERNAL_USER_PROMPT_TEMPLATE
-            self._external_prompt_template = EXTERNAL_USER_PROMPT_TEMPLATE
+        from src.users.prompts import build_external_prompt
+        from src.telegram.tools import has_telethon
 
         owner_link = get_owner_link()
         if owner_link:
@@ -464,13 +466,13 @@ class SessionManager:
         else:
             contact_info = "Прямой контакт недоступен, только через бота."
 
-        return self._external_prompt_template.format(
+        return build_external_prompt(
+            has_telethon=has_telethon(),
             telegram_id=telegram_id,
             username=user_display_name,
             owner_name=get_owner_display_name(),
             owner_telegram_id=settings.primary_owner_id,
             owner_contact_info=contact_info,
-            task_context="",  # task_context добавляется в prompt, не в system_prompt
         )
 
     def get_session(
@@ -625,6 +627,21 @@ class SessionManager:
             session = self._sessions[key]
             await session.destroy()
             del self._sessions[key]
+
+    def schedule_reset(self) -> None:
+        """Планирует reset всех сессий после завершения текущего запроса."""
+        self._pending_reset = True
+        logger.info("Sessions reset scheduled")
+
+    async def _execute_pending_reset(self) -> None:
+        """Выполняет отложенный reset если запланирован."""
+        if not self._pending_reset:
+            return
+        self._pending_reset = False
+        for session in list(self._sessions.values()):
+            await session.destroy()
+        self._sessions.clear()
+        logger.info("All sessions reset (deferred)")
 
     async def reset_all(self) -> None:
         for session in self._sessions.values():

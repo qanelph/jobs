@@ -76,6 +76,9 @@ class Settings(BaseSettings):
         """Проверяет, является ли пользователь одним из владельцев."""
         return telegram_id in self.tg_owner_ids
 
+    # Custom instructions (из Jobsy UI, env: CUSTOM_INSTRUCTIONS)
+    custom_instructions: str = ""
+
     # Claude (API key опционален при OAuth)
     anthropic_api_key: str | None = None
     claude_model: str = "claude-opus-4-6"

@@ -147,6 +147,20 @@ async def main() -> None:
     # Primary transport: Telethon preferred, Bot fallback
     primary = transports[0]
 
+    # Bot-only: получаем owner info через Bot API
+    if not telethon_transport and settings.tg_bot_token:
+        try:
+            chat = await bot_transport.bot.get_chat(settings.primary_owner_id)
+            set_owner_info(
+                telegram_id=settings.primary_owner_id,
+                first_name=chat.first_name,
+                username=chat.username,
+            )
+            logger.info(f"Owner (via Bot API): {chat.first_name} @{chat.username}")
+        except Exception as e:
+            logger.warning(f"Could not get owner info via Bot API: {e}")
+            set_owner_info(settings.primary_owner_id, None, None)
+
     # Tools
     set_transports(primary, telethon_client)
 

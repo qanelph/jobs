@@ -101,9 +101,9 @@ async def mcp_install(args: dict[str, Any]) -> dict[str, Any]:
         "Сессия будет перезапущена при следующем сообщении.",
     ]
 
-    # Сбрасываем сессию чтобы новые MCP подхватились
+    # Планируем сброс сессий после завершения текущего запроса
     from src.users import get_session_manager
-    await get_session_manager().reset_all()
+    get_session_manager().schedule_reset()
 
     return _text("\n".join(lines))
 
@@ -134,9 +134,9 @@ async def mcp_set_env(args: dict[str, Any]) -> dict[str, Any]:
     config.set_env(name, key, value)
     save_mcp_config()
 
-    # Сбрасываем сессию
+    # Планируем сброс сессий после завершения текущего запроса
     from src.users import get_session_manager
-    await get_session_manager().reset_all()
+    get_session_manager().schedule_reset()
 
     return _text(f"Установлено {name}.env.{key}. Сессия перезапустится при следующем сообщении.")
 
@@ -186,7 +186,7 @@ async def mcp_enable(args: dict[str, Any]) -> dict[str, Any]:
     if config.enable_server(name):
         save_mcp_config()
         from src.users import get_session_manager
-        await get_session_manager().reset_all()
+        get_session_manager().schedule_reset()
         return _text(f"MCP сервер {name} включён. Сессия перезапустится при следующем сообщении.")
 
     return _error(f"Сервер '{name}' не найден")
@@ -211,7 +211,7 @@ async def mcp_disable(args: dict[str, Any]) -> dict[str, Any]:
     if config.disable_server(name):
         save_mcp_config()
         from src.users import get_session_manager
-        await get_session_manager().reset_all()
+        get_session_manager().schedule_reset()
         return _text(f"MCP сервер {name} отключён. Сессия перезапустится при следующем сообщении.")
 
     return _error(f"Сервер '{name}' не найден")
@@ -236,7 +236,7 @@ async def mcp_remove(args: dict[str, Any]) -> dict[str, Any]:
     if config.remove_server(name):
         save_mcp_config()
         from src.users import get_session_manager
-        await get_session_manager().reset_all()
+        get_session_manager().schedule_reset()
         return _text(f"MCP сервер {name} удалён. Сессия перезапустится при следующем сообщении.")
 
     return _error(f"Сервер '{name}' не найден")

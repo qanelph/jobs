@@ -141,7 +141,6 @@ async def main() -> None:
 
         session_string = load_session_string()
         client = create_client(session_string)
-        set_telethon_gate(client)
         telethon_transport = TelethonTransport(client)
         telethon_client = client
 
@@ -151,6 +150,9 @@ async def main() -> None:
             if not await client.is_user_authorized():
                 logger.error("Telegram Telethon сессия невалидна. Удалите data/telethon.session")
                 sys.exit(1)
+
+            # Gate после connect + auth — клиент гарантированно готов
+            set_telethon_gate(client)
 
             me = await client.get_me()
             logger.info(f"Telethon: logged in as {me.first_name} (ID: {me.id})")

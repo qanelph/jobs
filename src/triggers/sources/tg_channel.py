@@ -72,7 +72,8 @@ class TelegramChannelTrigger:
 
     async def _on_new_post(self, event: events.NewMessage.Event) -> None:
         post = event.message
-        sender = await event.get_sender()
+        async with use_client():
+            sender = await event.get_sender()
         sender_name = getattr(sender, "first_name", "") or self._channel
 
         full_prompt = (

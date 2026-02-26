@@ -147,6 +147,8 @@ MUTABLE_FIELDS: frozenset[str] = frozenset({
     "timezone",
     "http_proxy",
     "openai_api_key",
+    "tg_api_id",
+    "tg_api_hash",
 })
 
 OVERRIDES_FILE = "config_overrides.json"

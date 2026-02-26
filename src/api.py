@@ -93,6 +93,8 @@ class PatchConfig(BaseModel):
     timezone: str | None = None
     http_proxy: str | None = None
     openai_api_key: str | None = None
+    tg_api_id: int | None = None
+    tg_api_hash: str | None = None
 
 
 # Гарантируем синхронность PatchConfig и MUTABLE_FIELDS — упадёт при импорте если разойдутся

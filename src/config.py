@@ -149,6 +149,8 @@ MUTABLE_FIELDS: frozenset[str] = frozenset({
     "openai_api_key",
     "tg_api_id",
     "tg_api_hash",
+    "tg_user_id",
+    "tg_owner_ids",
 })
 
 OVERRIDES_FILE = "config_overrides.json"

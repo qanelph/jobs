@@ -95,6 +95,8 @@ class PatchConfig(BaseModel):
     openai_api_key: str | None = None
     tg_api_id: int | None = None
     tg_api_hash: str | None = None
+    tg_user_id: int | None = None
+    tg_owner_ids: list[int] | None = None
 
 
 # Гарантируем синхронность PatchConfig и MUTABLE_FIELDS — упадёт при импорте если разойдутся

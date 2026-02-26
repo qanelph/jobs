@@ -39,9 +39,9 @@ Dual transport: Telethon (userbot) + aiogram (Bot API) — параллельн�
 │                                                                  │
 │            ↓                                                     │
 │  ┌─────────────────────────────────────────────────────────┐   │
-│  │              SQLite (db.sqlite)                          │   │
-│  │  • external_users  • tasks (+ next_step, session_id)      │
-│  │  • trigger_subscriptions                                  │   │
+│  │              SQLite                                       │   │
+│  │  db.sqlite:        external_users, tasks                   │   │
+│  │  triggers.sqlite:  trigger_subscriptions                   │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                  │
 │  /data/sessions/  — Claude session IDs                          │
@@ -220,7 +220,7 @@ tools: Read, Bash
 | `unsubscribe_trigger` | Отписаться |
 | `list_triggers` | Список активных подписок |
 
-Подписки хранятся в SQLite (`trigger_subscriptions`), восстанавливаются при рестарте.
+Подписки хранятся в `triggers.sqlite` (отдельная БД от `db.sqlite`), восстанавливаются при рестарте.
 
 ## Разделение доступа
 
@@ -286,6 +286,26 @@ BROWSER_CDP_URL             — CDP endpoint (default: http://browser:9223)
 
 `<sender-meta>` используется в групповых чатах и для forwarded сообщений.
 
+## HTTP API (конфигурация)
+
+Порт 8080, авторизация: `Bearer {JWT_SECRET_KEY}` (shared secret с оркестратором).
+
+| Эндпоинт | Метод | Описание |
+|----------|-------|----------|
+| `/health` | GET | Health check (без авторизации) |
+| `/config` | GET | Все настройки (секреты маскированы) + флаг `mutable` |
+| `/config` | PATCH | Partial update мутабельных полей |
+
+**Mutable** (можно менять без рестарта):
+`claude_model`, `timezone`, `http_proxy`, `openai_api_key`
+
+**Immutable** (требуют respawn):
+`tg_api_id`, `tg_api_hash`, `tg_bot_token`, `tg_owner_ids`, `anthropic_api_key`, `heartbeat_interval_minutes`, `browser_cdp_url`, `data_dir`, `workspace_dir`
+
+Секреты в GET /config маскируются (4 символа слева + звёздочки + 4 справа), полные значения через API получить нельзя.
+
+**Персистентность:** overrides сохраняются в `/data/config_overrides.json`. При старте: env vars → load overrides → итоговый settings.
+
 ## Singletons
 
 ```python
@@ -341,11 +361,33 @@ Follow-up от external users обрабатывается в том же кон
 - Heartbeat resume'ит все task sessions параллельно (`asyncio.gather`)
 - `next_step` — текущий шаг задачи для heartbeat промпта
 
+## Миграции
+
+Простая файловая система миграций для SQLite (`src/migrations/`).
+
+**Как работает:**
+- Модули `m001_*`, `m002_*` в `src/migrations/` — каждый экспортирует `async def apply(data_dir: Path)`
+- Runner обнаруживает их автоматически, запускает неприменённые по порядку
+- Применённые трекаются в `/data/.migrations.json`
+- Запускается в `main.py` до инициализации компонентов
+
+**Добавить миграцию:**
+1. Создать `src/migrations/m00N_description.py`
+2. Реализовать `async def apply(data_dir: Path)`
+3. Готово — runner подхватит при следующем старте
+
+**Текущие миграции:**
+| ID | Описание |
+|----|----------|
+| `m001` | Перенос `trigger_subscriptions` из `db.sqlite` в `triggers.sqlite` |
+
 ## Хранение
 
 ```
 /data/
-├── db.sqlite           # SQLite БД (users, tasks, trigger_subscriptions)
+├── db.sqlite           # SQLite БД (external_users, tasks)
+├── triggers.sqlite     # SQLite БД (trigger_subscriptions)
+├── .migrations.json    # Применённые миграции
 ├── sessions/           # Claude session IDs
 │   ├── {owner_id}.session       # Telethon owner session
 │   ├── bot:{owner_id}.session   # Bot owner session

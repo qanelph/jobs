@@ -47,6 +47,11 @@ def _get_transport() -> Transport:
     return _primary_transport
 
 
+def has_telethon() -> bool:
+    """Проверяет доступность Telethon клиента (runtime, не конфиг)."""
+    return _telethon_client is not None
+
+
 def _get_client() -> TelegramClient:
     """Получает Telethon клиент (для Telethon-only tools)."""
     if _telethon_client is None:

@@ -11,6 +11,7 @@ Telegram Handlers — обработка входящих сообщений.
 import asyncio
 import json
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -27,9 +28,10 @@ from src.telegram.transport import Transport, TransportMode, IncomingMessage
 from src.telegram import group_log
 
 MAX_TG_LENGTH = 4000
-TYPING_REFRESH_INTERVAL = 3.0
+TYPING_REFRESH_INTERVAL = 4.0  # Bot API typing expires after 5s
 LOADING_EMOJI_ID = 5255778087437617493
 MAX_DONE_LENGTH = 200
+STATUS_EDIT_INTERVAL = 2.0  # Минимальный интервал между edit_message (секунды)
 
 _SYSTEM_TAGS_RE = re.compile(r'<\s*/?(?:message-body|sender-meta)\s*/?\s*>', re.IGNORECASE)
 
@@ -39,8 +41,41 @@ def _sanitize_tags(text: str) -> str:
     return _SYSTEM_TAGS_RE.sub('', text)
 
 
+class TypingLoop:
+    """Фоновый цикл typing — шлёт chat action каждые N секунд до остановки."""
+
+    def __init__(self, transport: Transport, chat_id: int, message_thread_id: int | None = None) -> None:
+        self._transport = transport
+        self._chat_id = chat_id
+        self._thread_id = message_thread_id
+        self._task: asyncio.Task | None = None
+
+    async def start(self) -> None:
+        if self._task is None:
+            await self._transport.set_typing(self._chat_id, typing=True, message_thread_id=self._thread_id)
+            self._task = asyncio.create_task(self._loop())
+
+    async def stop(self) -> None:
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+        await self._transport.set_typing(self._chat_id, typing=False, message_thread_id=self._thread_id)
+
+    async def _loop(self) -> None:
+        try:
+            while True:
+                await self._transport.set_typing(self._chat_id, typing=True, message_thread_id=self._thread_id)
+                await asyncio.sleep(TYPING_REFRESH_INTERVAL)
+        except asyncio.CancelledError:
+            pass
+
+
 class StatusTracker:
-    """Управляет статусным сообщением с двумя слотами: active (тул) и done (результат)."""
+    """Управляет статусным сообщением с throttle и dedup для защиты от flood control."""
 
     def __init__(self, transport: Transport, msg: IncomingMessage, is_premium: bool) -> None:
         self._transport = transport
@@ -49,20 +84,32 @@ class StatusTracker:
         self._status_msg_id: int | None = None
         self._active: str | None = None
         self._done: str | None = None
+        self._last_edit_time: float = 0.0
+        self._last_sent_text: str = ""
+        self._flush_task: asyncio.Task | None = None
 
     async def set_active(self, text: str) -> None:
         """Обновляет верхний слот (текущее действие)."""
         self._active = text
-        await self._update()
+        await self._throttled_update()
 
     async def set_done(self, text: str) -> None:
         """Обновляет нижний слот (результат предыдущего действия)."""
         self._done = text[:MAX_DONE_LENGTH] if len(text) > MAX_DONE_LENGTH else text
         if self._active:
-            await self._update()
+            await self._throttled_update()
+
+    async def flush(self) -> None:
+        """Гарантированно отправляет последнее состояние перед удалением."""
+        self._cancel_flush()
+        if self._status_msg_id is not None:
+            text, entities = self._render()
+            if text != self._last_sent_text:
+                await self._do_edit(text, entities)
 
     async def delete(self) -> None:
-        """Удаляет статусное сообщение."""
+        """Отправляет pending update и удаляет статусное сообщение."""
+        self._cancel_flush()
         if self._status_msg_id:
             try:
                 await self._transport.delete_message(self._msg.chat_id, self._status_msg_id)
@@ -70,19 +117,52 @@ class StatusTracker:
                 pass
             self._status_msg_id = None
 
-    async def _update(self) -> None:
+    async def _throttled_update(self) -> None:
         text, entities = self._render()
+
+        # Dedup: не редактировать если текст не изменился
+        if text == self._last_sent_text and self._status_msg_id is not None:
+            return
+
+        # Первое сообщение — отправить сразу
         if self._status_msg_id is None:
             self._status_msg_id = await self._transport.reply_with_entities(
                 self._msg, text, entities,
             )
-        else:
-            try:
-                await self._transport.edit_message(
-                    self._msg.chat_id, self._status_msg_id, text, entities,
-                )
-            except Exception:
-                pass
+            self._last_sent_text = text
+            self._last_edit_time = time.monotonic()
+            return
+
+        # Throttle: проверяем интервал
+        elapsed = time.monotonic() - self._last_edit_time
+        if elapsed >= STATUS_EDIT_INTERVAL:
+            self._cancel_flush()
+            await self._do_edit(text, entities)
+        elif self._flush_task is None or self._flush_task.done():
+            # Планируем отложенный edit
+            delay = STATUS_EDIT_INTERVAL - elapsed
+            self._flush_task = asyncio.create_task(self._deferred_flush(delay))
+
+    async def _deferred_flush(self, delay: float) -> None:
+        await asyncio.sleep(delay)
+        text, entities = self._render()
+        if text != self._last_sent_text and self._status_msg_id is not None:
+            await self._do_edit(text, entities)
+
+    async def _do_edit(self, text: str, entities: list | None) -> None:
+        try:
+            await self._transport.edit_message(
+                self._msg.chat_id, self._status_msg_id, text, entities,
+            )
+            self._last_sent_text = text
+            self._last_edit_time = time.monotonic()
+        except Exception:
+            pass
+
+    def _cancel_flush(self) -> None:
+        if self._flush_task and not self._flush_task.done():
+            self._flush_task.cancel()
+            self._flush_task = None
 
     def _render(self) -> tuple[str, list | None]:
         icon = "\u23f3" if self._is_premium else "\U0001fa9b"
@@ -271,9 +351,9 @@ class TelegramHandlers:
             if not is_owner:
                 return
             session_manager = get_session_manager()
-            session = session_manager.get_session(user_id, channel=channel)
-            if session._is_querying and session._client:
-                await session._client.interrupt()
+            key = session_manager._make_key(user_id, channel)
+            session = session_manager._sessions.get(key)
+            if session and await session.try_interrupt():
                 await transport.reply(msg, "Остановлено.")
             else:
                 await transport.reply(msg, "Нечего останавливать.")
@@ -339,9 +419,6 @@ class TelegramHandlers:
         # Отмечаем как прочитанное
         await transport.mark_read(msg.chat_id, msg.message_id)
 
-        # Включаем typing
-        await transport.set_typing(msg.chat_id, typing=True)
-
         # Получаем сессию для этого пользователя + транспорта
         session_manager = get_session_manager()
         user_display_name = msg.sender_first_name or msg.sender_username or str(user_id)
@@ -354,7 +431,8 @@ class TelegramHandlers:
             logger.info(f"[{'owner' if is_owner else user_id}] Buffered (session busy), queue: {len(session._incoming)}")
             return
 
-        last_typing = asyncio.get_event_loop().time()
+        typing = TypingLoop(transport, msg.chat_id, msg.message_thread_id)
+        await typing.start()
         status = StatusTracker(transport, msg, await self._check_premium(transport))
 
         try:
@@ -363,13 +441,12 @@ class TelegramHandlers:
                 new_msg = self._reply_targets.pop(session_key, None)
                 if new_msg:
                     await status.delete()
+                    await typing.stop()
                     msg = new_msg
+                    transport = new_msg.transport
+                    typing = TypingLoop(transport, msg.chat_id, msg.message_thread_id)
+                    await typing.start()
                     status = StatusTracker(new_msg.transport, new_msg, await self._check_premium(new_msg.transport))
-
-                now_time = asyncio.get_event_loop().time()
-                if now_time - last_typing > TYPING_REFRESH_INTERVAL:
-                    await transport.set_typing(msg.chat_id, typing=True)
-                    last_typing = now_time
 
                 if tool_name:
                     await status.set_active(self._format_tool(tool_name))
@@ -389,7 +466,7 @@ class TelegramHandlers:
             await transport.reply(msg, f"Ошибка: {e}")
 
         finally:
-            await transport.set_typing(msg.chat_id, typing=False)
+            await typing.stop()
             await status.delete()
 
     async def _on_group_message(self, msg: IncomingMessage) -> None:
@@ -436,6 +513,31 @@ class TelegramHandlers:
         if not text:
             return
 
+        # Команды в группе (после strip @bot)
+        cmd = text.strip().lower()
+        if cmd == "/clear":
+            session_manager = get_session_manager()
+            channel = transport.mode.value
+            await session_manager.reset_group_session(msg.chat_id, channel)
+            await transport.reply(msg, "Сессия группы сброшена.")
+            return
+        if cmd == "/help":
+            help_text = (
+                "`/stop` — прервать текущий запрос\n"
+                "`/clear` — сбросить сессию группы\n"
+            )
+            await transport.reply(msg, help_text)
+            return
+        if cmd == "/stop":
+            session_manager = get_session_manager()
+            channel = transport.mode.value
+            session = session_manager.find_group_session(msg.chat_id, channel)
+            if session and await session.try_interrupt():
+                await transport.reply(msg, "Остановлено.")
+            else:
+                await transport.reply(msg, "Нечего останавливать.")
+            return
+
         channel = transport.mode.value
         chat_title = ""
         # Пробуем получить название чата
@@ -465,19 +567,12 @@ class TelegramHandlers:
             logger.info(f"[group:{msg.chat_id}] Buffered (session busy), queue: {len(session._incoming)}")
             return
 
-        # Включаем typing
-        await transport.set_typing(msg.chat_id, typing=True)
-
-        last_typing = asyncio.get_event_loop().time()
+        typing = TypingLoop(transport, msg.chat_id, msg.message_thread_id)
+        await typing.start()
         status = StatusTracker(transport, msg, await self._check_premium(transport))
 
         try:
             async for response_text, tool_name, is_final in session.query_stream(prompt):
-                now_time = asyncio.get_event_loop().time()
-                if now_time - last_typing > TYPING_REFRESH_INTERVAL:
-                    await transport.set_typing(msg.chat_id, typing=True)
-                    last_typing = now_time
-
                 if tool_name:
                     await status.set_active(self._format_tool(tool_name))
                 elif response_text and not is_final:
@@ -496,7 +591,7 @@ class TelegramHandlers:
             await transport.reply(msg, f"Ошибка: {e}")
 
         finally:
-            await transport.set_typing(msg.chat_id, typing=False)
+            await typing.stop()
             await status.delete()
 
     async def _check_premium(self, transport: Transport) -> bool:

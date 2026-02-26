@@ -1,8 +1,10 @@
+import json
 from datetime import datetime, timezone as tz
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from pydantic import model_validator
+from loguru import logger
+from pydantic import TypeAdapter, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -74,6 +76,9 @@ class Settings(BaseSettings):
         """Проверяет, является ли пользователь одним из владельцев."""
         return telegram_id in self.tg_owner_ids
 
+    # Custom instructions (из Jobsy UI, env: CUSTOM_INSTRUCTIONS)
+    custom_instructions: str = ""
+
     # Claude (API key опционален при OAuth)
     anthropic_api_key: str | None = None
     claude_model: str = "claude-opus-4-6"
@@ -92,6 +97,14 @@ class Settings(BaseSettings):
 
     # Heartbeat
     heartbeat_interval_minutes: int = 30  # 0 = отключен
+
+    @field_validator("heartbeat_interval_minutes", mode="before")
+    @classmethod
+    def _empty_str_to_default(cls, v: object) -> object:
+        """Пустая строка из env var → дефолт."""
+        if isinstance(v, str) and v.strip() == "":
+            return 30
+        return v
 
     # Browser (CDP via HAProxy)
     browser_cdp_url: str = "http://browser:9223"
@@ -125,6 +138,61 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Поля, которые можно менять через HTTP API без рестарта.
+# heartbeat_interval_minutes исключён: HeartbeatRunner читает значение при старте,
+# runtime-изменение не подхватывается без рестарта контейнера.
+MUTABLE_FIELDS: frozenset[str] = frozenset({
+    "claude_model",
+    "timezone",
+    "http_proxy",
+    "openai_api_key",
+    "tg_api_id",
+    "tg_api_hash",
+    "tg_user_id",
+    "tg_owner_ids",
+})
+
+OVERRIDES_FILE = "config_overrides.json"
+
+
+def _overrides_path() -> Path:
+    return settings.data_dir / OVERRIDES_FILE
+
+
+def get_current_overrides() -> dict[str, object]:
+    """Прочитать текущий файл overrides (пустой dict если файла нет)."""
+    path = _overrides_path()
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_overrides(overrides: dict[str, object]) -> None:
+    """Сохранить overrides в JSON файл."""
+    path = _overrides_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(overrides, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def apply_overrides(overrides: dict[str, object]) -> None:
+    """Применить overrides к in-memory settings (только mutable-поля, с валидацией типов)."""
+    for key, value in overrides.items():
+        if key not in MUTABLE_FIELDS:
+            continue
+        field_info = settings.model_fields.get(key)
+        if field_info is None:
+            continue
+        validated = TypeAdapter(field_info.annotation).validate_python(value)
+        setattr(settings, key, validated)
+
+
+def load_overrides() -> None:
+    """Загрузить overrides из файла и применить к settings."""
+    overrides = get_current_overrides()
+    if overrides:
+        apply_overrides(overrides)
+        logger.info(f"Config overrides loaded: {list(overrides.keys())}")
 
 
 # Runtime: информация о владельце (заполняется при старте из Telethon)

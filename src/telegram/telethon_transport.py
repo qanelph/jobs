@@ -65,7 +65,7 @@ class TelethonTransport:
     async def delete_message(self, chat_id: int, msg_id: int) -> None:
         await self._client.delete_messages(chat_id, msg_id)
 
-    async def set_typing(self, chat_id: int, typing: bool) -> None:
+    async def set_typing(self, chat_id: int, typing: bool, message_thread_id: int | None = None) -> None:
         try:
             action = SendMessageTypingAction() if typing else SendMessageCancelAction()
             entity = await self._client.get_input_entity(chat_id)

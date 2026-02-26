@@ -220,6 +220,20 @@ class UserSession:
         self._session_id = None
         self._session_file.unlink(missing_ok=True)
 
+    async def try_interrupt(self) -> bool:
+        """Безопасно прерывает текущий запрос. Возвращает True если прервал."""
+        if not self._is_querying:
+            return False
+        client = self._client
+        if client is None:
+            return False
+        try:
+            await client.interrupt()
+            return True
+        except Exception as e:
+            logger.debug(f"Interrupt failed [{self.telegram_id}]: {e}")
+            return False
+
     async def _destroy_client(self, client: ClaudeSDKClient) -> None:
         """Отключает и уничтожает клиент."""
         try:
@@ -274,6 +288,8 @@ class UserSession:
                                     logger.debug(f"Interrupted response [{self.telegram_id}]")
                             break  # success
 
+                        except (TypeError, AttributeError, ValueError, KeyError, ImportError):
+                            raise
                         except Exception as e:
                             if client:
                                 await self._destroy_client(client)
@@ -392,6 +408,8 @@ class UserSession:
                                 logger.debug(f"Interrupted response [{self.telegram_id}]")
                         break  # success
 
+                    except (TypeError, AttributeError, ValueError, KeyError, ImportError):
+                        raise
                     except Exception as e:
                         if client:
                             await self._destroy_client(client)
@@ -485,6 +503,7 @@ class SessionManager:
         self._task_sessions: dict[str, UserSession] = {}
         self._ephemeral_counter: int = 0
         self._pending_reset: bool = False
+        self._reset_lock: asyncio.Lock = asyncio.Lock()
 
         self._owner_prompt: str | None = None
 
@@ -662,6 +681,11 @@ class SessionManager:
         logger.info(f"Created group session for {key} ({chat_title})")
         return session
 
+    def find_group_session(self, chat_id: int, channel: str) -> UserSession | None:
+        """Ищет существующую групповую сессию (не создаёт новую)."""
+        key = self._make_group_key(chat_id, channel)
+        return self._sessions.get(key)
+
     async def reset_group_session(self, chat_id: int, channel: str) -> None:
         """Сбрасывает групповую сессию."""
         key = self._make_group_key(chat_id, channel)
@@ -683,14 +707,17 @@ class SessionManager:
         logger.info("Sessions reset scheduled")
 
     async def _execute_pending_reset(self) -> None:
-        """Выполняет отложенный reset если запланирован."""
+        """Выполняет отложенный reset если запланирован (lock-protected)."""
         if not self._pending_reset:
             return
-        self._pending_reset = False
-        for session in list(self._sessions.values()):
-            await session.destroy()
-        self._sessions.clear()
-        logger.info("All sessions reset (deferred)")
+        async with self._reset_lock:
+            if not self._pending_reset:
+                return  # другая корутина уже выполнила
+            self._pending_reset = False
+            for session in list(self._sessions.values()):
+                await session.destroy()
+            self._sessions.clear()
+            logger.info("All sessions reset (deferred)")
 
     async def reset_all(self) -> None:
         for session in self._sessions.values():

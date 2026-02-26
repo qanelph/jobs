@@ -351,9 +351,9 @@ class TelegramHandlers:
             if not is_owner:
                 return
             session_manager = get_session_manager()
-            session = session_manager.get_session(user_id, channel=channel)
-            if session._is_querying and session._client:
-                await session._client.interrupt()
+            key = session_manager._make_key(user_id, channel)
+            session = session_manager._sessions.get(key)
+            if session and await session.try_interrupt():
                 await transport.reply(msg, "Остановлено.")
             else:
                 await transport.reply(msg, "Нечего останавливать.")
@@ -531,9 +531,8 @@ class TelegramHandlers:
         if cmd == "/stop":
             session_manager = get_session_manager()
             channel = transport.mode.value
-            session = session_manager.get_group_session(msg.chat_id, "", channel)
-            if session._is_querying and session._client:
-                await session._client.interrupt()
+            session = session_manager.find_group_session(msg.chat_id, channel)
+            if session and await session.try_interrupt():
                 await transport.reply(msg, "Остановлено.")
             else:
                 await transport.reply(msg, "Нечего останавливать.")

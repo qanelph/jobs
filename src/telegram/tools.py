@@ -15,6 +15,7 @@ from claude_agent_sdk import tool
 from loguru import logger
 
 from src.config import settings
+from src.telegram.gate import use_client
 
 if TYPE_CHECKING:
     from telethon import TelegramClient
@@ -88,7 +89,8 @@ async def tg_send_message(args: dict[str, Any]) -> dict[str, Any]:
         if _telethon_client is None:
             return _error(f"Для отправки по @username/{chat} требуется Telethon")
         try:
-            entity = await _telethon_client.get_entity(chat)
+            async with use_client() as client:
+                entity = await client.get_entity(chat)
             chat_id = entity.id
         except Exception as e:
             return _error(f"Не удалось найти {chat}: {e}")
@@ -98,8 +100,9 @@ async def tg_send_message(args: dict[str, Any]) -> dict[str, Any]:
     try:
         # Если Telethon доступен и нужен reply_to — используем его напрямую
         if _telethon_client and reply_to:
-            entity = await _telethon_client.get_entity(chat_id)
-            result = await _telethon_client.send_message(entity, message, reply_to=reply_to)
+            async with use_client() as client:
+                entity = await client.get_entity(chat_id)
+                result = await client.send_message(entity, message, reply_to=reply_to)
             msg_id = result.id
         else:
             msg_id = await transport.send_message(chat_id, message)
@@ -126,15 +129,14 @@ async def tg_send_media(args: dict[str, Any]) -> dict[str, Any]:
     if not path.exists():
         return _error(f"Файл не найден: {media_path}")
 
-    client = _get_client()
-
     try:
-        entity = await client.get_entity(chat)
-        result = await client.send_file(
-            entity,
-            path,
-            caption=caption,
-        )
+        async with use_client() as client:
+            entity = await client.get_entity(chat)
+            result = await client.send_file(
+                entity,
+                path,
+                caption=caption,
+            )
         return _text(f"Медиа отправлено в {chat} (ID: {result.id})" + (f":\n{caption}" if caption else ""))
     except Exception as e:
         return _error(f"Ошибка отправки: {e}")
@@ -154,17 +156,15 @@ async def tg_forward_message(args: dict[str, Any]) -> dict[str, Any]:
     if not from_chat or not to_chat or not message_id:
         return _error("from_chat, to_chat и message_id обязательны")
 
-    client = _get_client()
-
     try:
-        from_entity = await client.get_entity(from_chat)
-        to_entity = await client.get_entity(to_chat)
-
-        result = await client.forward_messages(
-            to_entity,
-            message_id,
-            from_entity,
-        )
+        async with use_client() as client:
+            from_entity = await client.get_entity(from_chat)
+            to_entity = await client.get_entity(to_chat)
+            result = await client.forward_messages(
+                to_entity,
+                message_id,
+                from_entity,
+            )
         return _text(f"Сообщение {message_id} переслано из {from_chat} в {to_chat}")
     except Exception as e:
         return _error(f"Ошибка пересылки: {e}")
@@ -184,15 +184,14 @@ async def tg_send_comment(args: dict[str, Any]) -> dict[str, Any]:
     if not channel or not post_id or not message:
         return _error("channel, post_id и message обязательны")
 
-    client = _get_client()
-
     try:
-        entity = await client.get_entity(channel)
-        result = await client.send_message(
-            entity,
-            message,
-            comment_to=post_id,
-        )
+        async with use_client() as client:
+            entity = await client.get_entity(channel)
+            result = await client.send_message(
+                entity,
+                message,
+                comment_to=post_id,
+            )
         return _text(f"Комментарий в {channel} к посту {post_id} (ID: {result.id}):\n{message}")
     except Exception as e:
         return _error(f"Ошибка отправки комментария: {e}")
@@ -213,11 +212,11 @@ async def tg_get_participants(args: dict[str, Any]) -> dict[str, Any]:
         return _error("chat обязателен")
 
     limit = min(limit, 200)
-    client = _get_client()
 
     try:
-        entity = await client.get_entity(chat)
-        participants = await client.get_participants(entity, limit=limit, search=search)
+        async with use_client() as client:
+            entity = await client.get_entity(chat)
+            participants = await client.get_participants(entity, limit=limit, search=search)
 
         if not participants:
             return _text("Нет участников" + (f" по запросу '{search}'" if search else ""))
@@ -255,11 +254,11 @@ async def tg_read_channel(args: dict[str, Any]) -> dict[str, Any]:
         return _error("channel обязателен")
 
     limit = min(limit, 50)  # Ограничение
-    client = _get_client()
 
     try:
-        entity = await client.get_entity(channel)
-        messages = await client.get_messages(entity, limit=limit)
+        async with use_client() as client:
+            entity = await client.get_entity(channel)
+            messages = await client.get_messages(entity, limit=limit)
 
         if not messages:
             return _text("Нет сообщений")
@@ -307,27 +306,27 @@ async def tg_read_comments(args: dict[str, Any]) -> dict[str, Any]:
         return _error("channel и post_id обязательны")
 
     limit = min(limit, 50)
-    client = _get_client()
 
     try:
-        entity = await client.get_entity(channel)
-        comments = await client.get_messages(
-            entity,
-            reply_to=post_id,
-            limit=limit,
-        )
+        async with use_client() as client:
+            entity = await client.get_entity(channel)
+            comments = await client.get_messages(
+                entity,
+                reply_to=post_id,
+                limit=limit,
+            )
 
-        if not comments:
-            return _text("Нет комментариев")
+            if not comments:
+                return _text("Нет комментариев")
 
-        lines = [f"Комментарии к посту {post_id}:\n"]
+            lines = [f"Комментарии к посту {post_id}:\n"]
 
-        for msg in comments:
-            sender = await msg.get_sender()
-            sender_info = _format_sender_detailed(sender)
-            date = msg.date.strftime("%d.%m %H:%M")
-            text = msg.text[:150] + "..." if msg.text and len(msg.text) > 150 else (msg.text or "[медиа]")
-            lines.append(f"{sender_info} ({date}):\n{text}\n")
+            for msg in comments:
+                sender = await msg.get_sender()
+                sender_info = _format_sender_detailed(sender)
+                date = msg.date.strftime("%d.%m %H:%M")
+                text = msg.text[:150] + "..." if msg.text and len(msg.text) > 150 else (msg.text or "[медиа]")
+                lines.append(f"{sender_info} ({date}):\n{text}\n")
 
         return _text("\n".join(lines))
     except Exception as e:
@@ -348,23 +347,23 @@ async def tg_read_chat(args: dict[str, Any]) -> dict[str, Any]:
         return _error("chat обязателен")
 
     limit = min(limit, 50)
-    client = _get_client()
 
     try:
-        entity = await client.get_entity(chat)
-        messages = await client.get_messages(entity, limit=limit)
+        async with use_client() as client:
+            entity = await client.get_entity(chat)
+            messages = await client.get_messages(entity, limit=limit)
 
-        if not messages:
-            return _text("Нет сообщений")
+            if not messages:
+                return _text("Нет сообщений")
 
-        lines = [f"История чата ({len(messages)} сообщений):\n"]
+            lines = [f"История чата ({len(messages)} сообщений):\n"]
 
-        for msg in reversed(messages):  # Хронологический порядок
-            sender = await msg.get_sender()
-            name = _format_sender(sender)
-            date = msg.date.strftime("%d.%m %H:%M")
-            text = msg.text[:200] + "..." if msg.text and len(msg.text) > 200 else (msg.text or "[медиа]")
-            lines.append(f"[{msg.id}] {name} ({date}):\n{text}\n")
+            for msg in reversed(messages):  # Хронологический порядок
+                sender = await msg.get_sender()
+                name = _format_sender(sender)
+                date = msg.date.strftime("%d.%m %H:%M")
+                text = msg.text[:200] + "..." if msg.text and len(msg.text) > 200 else (msg.text or "[медиа]")
+                lines.append(f"[{msg.id}] {name} ({date}):\n{text}\n")
 
         return _text("\n".join(lines))
     except Exception as e:
@@ -386,27 +385,27 @@ async def tg_search_messages(args: dict[str, Any]) -> dict[str, Any]:
         return _error("chat и query обязательны")
 
     limit = min(limit, 50)
-    client = _get_client()
 
     try:
-        entity = await client.get_entity(chat)
-        messages = await client.get_messages(
-            entity,
-            search=query,
-            limit=limit,
-        )
+        async with use_client() as client:
+            entity = await client.get_entity(chat)
+            messages = await client.get_messages(
+                entity,
+                search=query,
+                limit=limit,
+            )
 
-        if not messages:
-            return _text(f"Ничего не найдено по запросу '{query}'")
+            if not messages:
+                return _text(f"Ничего не найдено по запросу '{query}'")
 
-        lines = [f"Найдено {len(messages)} сообщений по '{query}':\n"]
+            lines = [f"Найдено {len(messages)} сообщений по '{query}':\n"]
 
-        for msg in messages:
-            sender = await msg.get_sender()
-            name = _format_sender(sender)
-            date = msg.date.strftime("%d.%m %H:%M")
-            text = msg.text[:150] + "..." if msg.text and len(msg.text) > 150 else (msg.text or "[медиа]")
-            lines.append(f"[{msg.id}] {name} ({date}):\n{text}\n")
+            for msg in messages:
+                sender = await msg.get_sender()
+                name = _format_sender(sender)
+                date = msg.date.strftime("%d.%m %H:%M")
+                text = msg.text[:150] + "..." if msg.text and len(msg.text) > 150 else (msg.text or "[медиа]")
+                lines.append(f"[{msg.id}] {name} ({date}):\n{text}\n")
 
         return _text("\n".join(lines))
     except Exception as e:
@@ -432,10 +431,9 @@ async def tg_get_user_info(args: dict[str, Any]) -> dict[str, Any]:
     if not user:
         return _error("user обязателен")
 
-    client = _get_client()
-
     try:
-        entity = await client.get_entity(user)
+        async with use_client() as client:
+            entity = await client.get_entity(user)
 
         if isinstance(entity, User):
             username = f"@{entity.username}" if entity.username else "нет"
@@ -488,10 +486,9 @@ async def tg_get_dialogs(args: dict[str, Any]) -> dict[str, Any]:
     limit = args.get("limit", 30)
     limit = min(limit, 100)
 
-    client = _get_client()
-
     try:
-        dialogs = await client.get_dialogs(limit=limit)
+        async with use_client() as client:
+            dialogs = await client.get_dialogs(limit=limit)
 
         if not dialogs:
             return _text("Нет диалогов")
@@ -533,30 +530,29 @@ async def tg_download_media(args: dict[str, Any]) -> dict[str, Any]:
     if not chat or not message_id:
         return _error("chat и message_id обязательны")
 
-    client = _get_client()
-
     try:
-        entity = await client.get_entity(chat)
-        messages = await client.get_messages(entity, ids=message_id)
+        async with use_client() as client:
+            entity = await client.get_entity(chat)
+            messages = await client.get_messages(entity, ids=message_id)
 
-        if not messages:
-            return _error(f"Сообщение {message_id} не найдено")
+            if not messages:
+                return _error(f"Сообщение {message_id} не найдено")
 
-        msg = messages[0] if isinstance(messages, list) else messages
+            msg = messages[0] if isinstance(messages, list) else messages
 
-        if not msg.media:
-            return _error("В сообщении нет медиа")
+            if not msg.media:
+                return _error("В сообщении нет медиа")
 
-        # Путь для сохранения
-        downloads_dir = settings.workspace_dir / "downloads"
-        downloads_dir.mkdir(exist_ok=True)
+            # Путь для сохранения
+            downloads_dir = settings.workspace_dir / "downloads"
+            downloads_dir.mkdir(exist_ok=True)
 
-        if filename:
-            path = downloads_dir / filename
-        else:
-            path = downloads_dir
+            if filename:
+                path = downloads_dir / filename
+            else:
+                path = downloads_dir
 
-        downloaded = await client.download_media(msg, path)
+            downloaded = await client.download_media(msg, path)
 
         return _text(f"Скачано: {downloaded}")
     except Exception as e:

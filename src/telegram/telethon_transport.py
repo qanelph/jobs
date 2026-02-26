@@ -12,6 +12,7 @@ from telethon import TelegramClient, events
 from telethon.tl.functions.messages import SetTypingRequest
 from telethon.tl.types import SendMessageTypingAction, SendMessageCancelAction
 
+from src.telegram.gate import use_client
 from src.telegram.transport import (
     Transport,
     TransportMode,
@@ -44,51 +45,62 @@ class TelethonTransport:
         await self._client.disconnect()
 
     async def send_message(self, chat_id: int, text: str) -> int:
-        result = await self._client.send_message(chat_id, text)
+        async with use_client() as client:
+            result = await client.send_message(chat_id, text)
         return result.id
 
     async def reply(self, msg: IncomingMessage, text: str) -> int:
-        result = await msg.raw.reply(text)
+        async with use_client():
+            result = await msg.raw.reply(text)
         return result.id
 
     async def reply_with_entities(
         self, msg: IncomingMessage, text: str, entities: list | None,
     ) -> int:
-        result = await msg.raw.reply(text, formatting_entities=entities)
+        async with use_client():
+            result = await msg.raw.reply(text, formatting_entities=entities)
         return result.id
 
     async def edit_message(
         self, chat_id: int, msg_id: int, text: str, entities: list | None = None,
     ) -> None:
-        await self._client.edit_message(chat_id, msg_id, text, formatting_entities=entities)
+        async with use_client() as client:
+            await client.edit_message(chat_id, msg_id, text, formatting_entities=entities)
 
     async def delete_message(self, chat_id: int, msg_id: int) -> None:
-        await self._client.delete_messages(chat_id, msg_id)
+        async with use_client() as client:
+            await client.delete_messages(chat_id, msg_id)
 
     async def set_typing(self, chat_id: int, typing: bool, message_thread_id: int | None = None) -> None:
         try:
             action = SendMessageTypingAction() if typing else SendMessageCancelAction()
-            entity = await self._client.get_input_entity(chat_id)
-            await self._client(SetTypingRequest(peer=entity, action=action))
+            async with use_client() as client:
+                entity = await client.get_input_entity(chat_id)
+                await client(SetTypingRequest(peer=entity, action=action))
         except Exception as e:
             logger.debug(f"Typing status error: {e}")
 
     async def mark_read(self, chat_id: int, msg_id: int) -> None:
-        entity = await self._client.get_input_entity(chat_id)
-        await self._client.send_read_acknowledge(entity, max_id=msg_id)
+        async with use_client() as client:
+            entity = await client.get_input_entity(chat_id)
+            await client.send_read_acknowledge(entity, max_id=msg_id)
 
     async def download_media(self, msg: IncomingMessage) -> bytes | None:
         raw = msg.raw.message if hasattr(msg.raw, "message") else msg.raw
         if hasattr(raw, "voice") and raw.voice:
-            return await self._client.download_media(raw.voice, bytes)
+            async with use_client() as client:
+                return await client.download_media(raw.voice, bytes)
         if hasattr(raw, "photo") and raw.photo:
-            return await self._client.download_media(raw.photo, bytes)
+            async with use_client() as client:
+                return await client.download_media(raw.photo, bytes)
         if hasattr(raw, "document") and raw.document:
-            return await self._client.download_media(raw.document, bytes)
+            async with use_client() as client:
+                return await client.download_media(raw.document, bytes)
         return None
 
     async def send_file(self, chat_id: int, path: Path, caption: str = "") -> int:
-        result = await self._client.send_file(chat_id, path, caption=caption)
+        async with use_client() as client:
+            result = await client.send_file(chat_id, path, caption=caption)
         return result.id
 
     async def get_me(self) -> dict:

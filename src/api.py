@@ -86,6 +86,13 @@ class UpdateCredentials(BaseModel):
     credentials: dict[str, Any]
 
 
+class UpdateSession(BaseModel):
+    """Push Telethon session от оркестратора."""
+
+    session_string: str
+    info: dict[str, Any] | None = None
+
+
 class PatchConfig(BaseModel):
     """Partial update мутабельных полей."""
 
@@ -175,6 +182,41 @@ def create_app() -> FastAPI:
         creds_path = settings.claude_dir / ".credentials.json"
         creds_path.parent.mkdir(parents=True, exist_ok=True)
         creds_path.write_text(json.dumps(body.credentials, indent=2))
+        return {"status": "ok"}
+
+    _session_info_path = settings.data_dir / "telethon_info.json"
+
+    @app.get("/session")
+    async def get_session() -> dict[str, Any]:
+        """Проверить наличие Telethon session и вернуть user info."""
+        result: dict[str, Any] = {"has_session": settings.session_path.exists()}
+        if result["has_session"] and _session_info_path.exists():
+            result.update(json.loads(_session_info_path.read_text()))
+        return result
+
+    @app.post("/session")
+    async def update_session(
+        body: UpdateSession,
+        authorization: str = Header(...),
+    ) -> dict[str, str]:
+        """Push Telethon session + user info от оркестратора."""
+        _verify_secret(authorization)
+        settings.session_path.parent.mkdir(parents=True, exist_ok=True)
+        settings.session_path.write_bytes(body.session_string.encode("utf-8"))
+        if body.info:
+            _session_info_path.write_text(json.dumps(body.info, ensure_ascii=False))
+        return {"status": "ok"}
+
+    @app.delete("/session")
+    async def delete_session(
+        authorization: str = Header(...),
+    ) -> dict[str, str]:
+        """Удалить Telethon session и info."""
+        _verify_secret(authorization)
+        if settings.session_path.exists():
+            settings.session_path.unlink()
+        if _session_info_path.exists():
+            _session_info_path.unlink()
         return {"status": "ok"}
 
     return app

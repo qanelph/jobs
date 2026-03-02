@@ -13,6 +13,7 @@ from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import Channel
 from loguru import logger
 
+from src.telegram.gate import use_client
 from src.telegram.transport import TransportMode
 from src.triggers.executor import TriggerExecutor
 from src.triggers.models import TriggerEvent
@@ -45,17 +46,18 @@ class TelegramChannelTrigger:
         self._event_filter = None
 
     async def start(self) -> None:
-        entity = await self._client.get_entity(self._channel)
+        async with use_client() as client:
+            entity = await client.get_entity(self._channel)
 
-        # Подписываемся на канал, если ещё не подписаны
-        if isinstance(entity, Channel) and not entity.left:
-            logger.debug(f"Already joined {self._channel}")
-        elif isinstance(entity, Channel):
-            logger.info(f"Joining channel {self._channel}...")
-            await self._client(JoinChannelRequest(entity))
-            # Перечитываем entity после join
-            entity = await self._client.get_entity(self._channel)
-            logger.info(f"Joined {self._channel}")
+            # Подписываемся на канал, если ещё не подписаны
+            if isinstance(entity, Channel) and not entity.left:
+                logger.debug(f"Already joined {self._channel}")
+            elif isinstance(entity, Channel):
+                logger.info(f"Joining channel {self._channel}...")
+                await client(JoinChannelRequest(entity))
+                # Перечитываем entity после join
+                entity = await client.get_entity(self._channel)
+                logger.info(f"Joined {self._channel}")
 
         self._event_filter = events.NewMessage(chats=[entity])
         self._client.add_event_handler(self._on_new_post, self._event_filter)
@@ -70,7 +72,8 @@ class TelegramChannelTrigger:
 
     async def _on_new_post(self, event: events.NewMessage.Event) -> None:
         post = event.message
-        sender = await event.get_sender()
+        async with use_client():
+            sender = await event.get_sender()
         sender_name = getattr(sender, "first_name", "") or self._channel
 
         full_prompt = (

@@ -17,6 +17,7 @@ from src.api import create_app
 from src.config import settings, set_owner_info, load_overrides
 from src.telegram.client import create_client, load_session_string
 from src.telegram.handlers import TelegramHandlers
+from src.telegram.gate import set_client as set_telethon_gate
 from src.telegram.tools import set_transports
 from src.telegram.transport import Transport
 from src.setup import run_setup, is_telegram_configured, is_claude_configured
@@ -149,6 +150,9 @@ async def main() -> None:
             if not await client.is_user_authorized():
                 logger.error("Telegram Telethon сессия невалидна. Удалите data/telethon.session")
                 sys.exit(1)
+
+            # Gate после connect + auth — клиент гарантированно готов
+            set_telethon_gate(client)
 
             me = await client.get_me()
             logger.info(f"Telethon: logged in as {me.first_name} (ID: {me.id})")

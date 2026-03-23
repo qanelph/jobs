@@ -225,7 +225,8 @@ class UserSession:
     @staticmethod
     def _is_init_timeout(error: Exception) -> bool:
         """Проверяет, вызвана ли ошибка таймаутом инициализации MCP."""
-        return "initialize" in str(error).lower() and "timeout" in str(error).lower()
+        msg = str(error).lower()
+        return "control request timeout" in msg and "initialize" in msg
 
     def _reset_stale_session(self) -> None:
         """Сбрасывает session_id и удаляет файл сессии."""
@@ -312,7 +313,7 @@ class UserSession:
                                 logger.warning(f"Resume failed [{self.telegram_id}], retrying: {e}")
                                 self._reset_stale_session()
                                 continue
-                            if attempt <= 1 and self._is_init_timeout(e) and self.is_owner:
+                            if not skip_external_mcp and self._is_init_timeout(e) and self.is_owner:
                                 logger.warning(
                                     f"Init timeout [{self.telegram_id}], "
                                     "retrying without external MCP servers"
@@ -440,7 +441,7 @@ class UserSession:
                             logger.warning(f"Resume failed [{self.telegram_id}], retrying: {e}")
                             self._reset_stale_session()
                             continue
-                        if attempt <= 1 and self._is_init_timeout(e) and self.is_owner:
+                        if not skip_external_mcp and self._is_init_timeout(e) and self.is_owner:
                             logger.warning(
                                 f"Init timeout [{self.telegram_id}], "
                                 "retrying without external MCP servers"

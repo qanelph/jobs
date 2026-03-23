@@ -135,8 +135,12 @@ class UserSession:
         self._clear_incoming_file()
         return "\n".join(lines)
 
-    def _build_options(self) -> ClaudeAgentOptions:
-        """Создаёт опции для клиента."""
+    def _build_options(self, *, skip_external_mcp: bool = False) -> ClaudeAgentOptions:
+        """Создаёт опции для клиента.
+
+        Args:
+            skip_external_mcp: Не подключать внешние MCP серверы (fallback при initialize timeout).
+        """
         env = os.environ.copy()
         if settings.http_proxy:
             env["HTTP_PROXY"] = settings.http_proxy
@@ -147,11 +151,12 @@ class UserSession:
 
         mcp_servers = {"jobs": self._tools_server}
 
-        if self.is_owner:
+        if self.is_owner and not skip_external_mcp:
             mcp_config = get_mcp_config()
             external_servers = mcp_config.to_mcp_json()
             mcp_servers.update(external_servers)
 
+        if self.is_owner:
             mcp_servers["browser"] = {
                 "command": "playwright-cdp-wrapper",
                 "args": [
@@ -205,14 +210,22 @@ class UserSession:
         """Логирует stderr от Claude Code CLI."""
         logger.debug(f"claude-cli stderr: {line}")
 
-    async def _create_client(self) -> ClaudeSDKClient:
+    async def _create_client(self, *, skip_external_mcp: bool = False) -> ClaudeSDKClient:
         """Создаёт и подключает новый клиент."""
-        options = self._build_options()
+        options = self._build_options(skip_external_mcp=skip_external_mcp)
         options.stderr = self._stderr_handler
         client = ClaudeSDKClient(options=options)
         await client.connect()
-        logger.debug(f"Client connected [{self.telegram_id}]")
+        if skip_external_mcp:
+            logger.info(f"Client connected [{self.telegram_id}] (without external MCP)")
+        else:
+            logger.debug(f"Client connected [{self.telegram_id}]")
         return client
+
+    @staticmethod
+    def _is_init_timeout(error: Exception) -> bool:
+        """Проверяет, вызвана ли ошибка таймаутом инициализации MCP."""
+        return "initialize" in str(error).lower() and "timeout" in str(error).lower()
 
     def _reset_stale_session(self) -> None:
         """Сбрасывает session_id и удаляет файл сессии."""
@@ -264,9 +277,10 @@ class UserSession:
 
             try:
                 async with asyncio.timeout(QUERY_TIMEOUT_SECONDS):
-                    for attempt in range(2):
+                    skip_external_mcp = False
+                    for attempt in range(3):
                         try:
-                            client = await self._create_client()
+                            client = await self._create_client(skip_external_mcp=skip_external_mcp)
                             self._client = client
                             await client.query(full_prompt)
                             interrupted = False
@@ -297,6 +311,13 @@ class UserSession:
                             if attempt == 0 and had_session and not text_parts:
                                 logger.warning(f"Resume failed [{self.telegram_id}], retrying: {e}")
                                 self._reset_stale_session()
+                                continue
+                            if attempt <= 1 and self._is_init_timeout(e) and self.is_owner:
+                                logger.warning(
+                                    f"Init timeout [{self.telegram_id}], "
+                                    "retrying without external MCP servers"
+                                )
+                                skip_external_mcp = True
                                 continue
                             raise
 
@@ -379,9 +400,10 @@ class UserSession:
 
         try:
             async with asyncio.timeout(QUERY_TIMEOUT_SECONDS):
-                for attempt in range(2):
+                skip_external_mcp = False
+                for attempt in range(3):
                     try:
-                        client = await self._create_client()
+                        client = await self._create_client(skip_external_mcp=skip_external_mcp)
                         self._client = client
                         await client.query(full_prompt)
                         interrupted = False
@@ -417,6 +439,13 @@ class UserSession:
                         if attempt == 0 and had_session and not text_buffer:
                             logger.warning(f"Resume failed [{self.telegram_id}], retrying: {e}")
                             self._reset_stale_session()
+                            continue
+                        if attempt <= 1 and self._is_init_timeout(e) and self.is_owner:
+                            logger.warning(
+                                f"Init timeout [{self.telegram_id}], "
+                                "retrying without external MCP servers"
+                            )
+                            skip_external_mcp = True
                             continue
                         raise
 

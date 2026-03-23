@@ -232,7 +232,7 @@ class UserSession:
     def _is_auth_error(error: Exception) -> bool:
         """Проверяет, вызвана ли ошибка истёкшим OAuth-токеном."""
         msg = str(error).lower()
-        return "authentication_error" in msg or "oauth token has expired" in msg
+        return "oauth token has expired" in msg
 
     def _reset_stale_session(self) -> None:
         """Сбрасывает session_id и удаляет файл сессии."""
@@ -285,6 +285,7 @@ class UserSession:
             try:
                 async with asyncio.timeout(QUERY_TIMEOUT_SECONDS):
                     skip_external_mcp = False
+                    credentials_refreshed = False
                     for attempt in range(4):
                         try:
                             client = await self._create_client(skip_external_mcp=skip_external_mcp)
@@ -326,7 +327,7 @@ class UserSession:
                                 )
                                 skip_external_mcp = True
                                 continue
-                            if self._is_auth_error(e):
+                            if not credentials_refreshed and self._is_auth_error(e):
                                 logger.warning(
                                     f"Auth error [{self.telegram_id}], "
                                     "pulling fresh credentials from orchestrator"
@@ -334,6 +335,7 @@ class UserSession:
                                 from src.credentials import pull_credentials
                                 await pull_credentials()
                                 self._reset_stale_session()
+                                credentials_refreshed = True
                                 continue
                             raise
 
@@ -417,6 +419,7 @@ class UserSession:
         try:
             async with asyncio.timeout(QUERY_TIMEOUT_SECONDS):
                 skip_external_mcp = False
+                credentials_refreshed = False
                 for attempt in range(4):
                     try:
                         client = await self._create_client(skip_external_mcp=skip_external_mcp)
@@ -463,7 +466,7 @@ class UserSession:
                             )
                             skip_external_mcp = True
                             continue
-                        if self._is_auth_error(e):
+                        if not credentials_refreshed and self._is_auth_error(e):
                             logger.warning(
                                 f"Auth error [{self.telegram_id}], "
                                 "pulling fresh credentials from orchestrator"
@@ -471,6 +474,7 @@ class UserSession:
                             from src.credentials import pull_credentials
                             await pull_credentials()
                             self._reset_stale_session()
+                            credentials_refreshed = True
                             continue
                         raise
 

@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   agent:
     runs-on: ubuntu-latest
@@ -43,6 +46,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: browser
+          file: browser/Dockerfile
           platforms: linux/amd64
           push: true
           cache-from: type=gha,scope=browser

@@ -1,8 +1,11 @@
-name: Build & Push Docker Image
+name: Build & Push Docker Images
 
 on:
   push:
     branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   agent:
@@ -22,6 +25,32 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
+          cache-from: type=gha,scope=agent
+          cache-to: type=gha,mode=max,scope=agent
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/jobs-agent:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/jobs-agent:sha-${{ github.sha }}
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: browser
+          file: browser/Dockerfile
+          platforms: linux/amd64
+          push: true
+          cache-from: type=gha,scope=browser
+          cache-to: type=gha,mode=max,scope=browser
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/jobs-browser:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/jobs-browser:sha-${{ github.sha }}

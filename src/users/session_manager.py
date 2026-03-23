@@ -228,6 +228,12 @@ class UserSession:
         msg = str(error).lower()
         return "control request timeout" in msg and "initialize" in msg
 
+    @staticmethod
+    def _is_auth_error(error: Exception) -> bool:
+        """Проверяет, вызвана ли ошибка истёкшим OAuth-токеном."""
+        msg = str(error).lower()
+        return "oauth token has expired" in msg
+
     def _reset_stale_session(self) -> None:
         """Сбрасывает session_id и удаляет файл сессии."""
         logger.warning(f"Resetting stale session [{self.telegram_id}]: {self._session_id}")
@@ -279,7 +285,8 @@ class UserSession:
             try:
                 async with asyncio.timeout(QUERY_TIMEOUT_SECONDS):
                     skip_external_mcp = False
-                    for attempt in range(3):
+                    credentials_refreshed = False
+                    for attempt in range(4):
                         try:
                             client = await self._create_client(skip_external_mcp=skip_external_mcp)
                             self._client = client
@@ -319,6 +326,16 @@ class UserSession:
                                     "retrying without external MCP servers"
                                 )
                                 skip_external_mcp = True
+                                continue
+                            if not credentials_refreshed and self._is_auth_error(e):
+                                logger.warning(
+                                    f"Auth error [{self.telegram_id}], "
+                                    "pulling fresh credentials from orchestrator"
+                                )
+                                from src.credentials import pull_credentials
+                                await pull_credentials()
+                                self._reset_stale_session()
+                                credentials_refreshed = True
                                 continue
                             raise
 
@@ -402,7 +419,8 @@ class UserSession:
         try:
             async with asyncio.timeout(QUERY_TIMEOUT_SECONDS):
                 skip_external_mcp = False
-                for attempt in range(3):
+                credentials_refreshed = False
+                for attempt in range(4):
                     try:
                         client = await self._create_client(skip_external_mcp=skip_external_mcp)
                         self._client = client
@@ -447,6 +465,16 @@ class UserSession:
                                 "retrying without external MCP servers"
                             )
                             skip_external_mcp = True
+                            continue
+                        if not credentials_refreshed and self._is_auth_error(e):
+                            logger.warning(
+                                f"Auth error [{self.telegram_id}], "
+                                "pulling fresh credentials from orchestrator"
+                            )
+                            from src.credentials import pull_credentials
+                            await pull_credentials()
+                            self._reset_stale_session()
+                            credentials_refreshed = True
                             continue
                         raise
 

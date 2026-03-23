@@ -59,6 +59,7 @@ EXPOSE 9223 5900 6080
 # Переменные окружения
 ENV DISPLAY=:99
 ENV RESOLUTION=1920x1080x24
+ENV HTTP_PROXY=""
 
 WORKDIR /home/browser
 

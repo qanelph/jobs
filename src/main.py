@@ -53,45 +53,19 @@ def _has_telethon_session() -> bool:
 
 
 async def _pull_credentials_on_start() -> None:
-    """Запрос credentials у оркестратора при старте (K8s mode).
-
-    GET {ORCHESTRATOR_URL}/claude-auth/credentials → записывает .credentials.json.
-    Retry 3 попытки с паузой 2с. Если ORCHESTRATOR_URL не задан — skip.
-    """
-    orchestrator_url = os.environ.get("ORCHESTRATOR_URL", "")
-    jwt_secret = os.environ.get("JWT_SECRET_KEY", "")
-    if not orchestrator_url or not jwt_secret:
-        return
-
-    url = f"{orchestrator_url.rstrip('/')}/claude-auth/credentials"
-    headers = {"Authorization": f"Bearer {jwt_secret}"}
-    creds_path = settings.claude_dir / ".credentials.json"
+    """Запрос credentials у оркестратора при старте (K8s mode). Retry 3 попытки."""
+    from src.credentials import pull_credentials
 
     for attempt in range(1, 4):
         try:
-            async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
-                resp = await client.get(url, headers=headers)
-            if resp.status_code != 200:
-                logger.warning(f"Credentials pull attempt {attempt}: HTTP {resp.status_code}")
-                await asyncio.sleep(2)
-                continue
-
-            data = resp.json()
-            credentials = data.get("credentials")
-            if not credentials:
-                logger.info("Credentials pull: no credentials configured on orchestrator")
+            if await pull_credentials():
                 return
-
-            creds_path.parent.mkdir(parents=True, exist_ok=True)
-            creds_path.write_text(json.dumps(credentials, indent=2))
-            logger.info("Credentials pulled successfully from orchestrator")
-            return
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             logger.warning(f"Credentials pull attempt {attempt}: {exc}")
-            if attempt < 3:
-                await asyncio.sleep(2)
+        if attempt < 3:
+            await asyncio.sleep(2)
 
-    logger.warning("Credentials pull failed after 3 attempts — agent may lack OAuth tokens")
+    logger.warning("Credentials pull failed after 3 attempts")
 
 
 async def main() -> None:

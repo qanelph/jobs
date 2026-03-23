@@ -5,6 +5,7 @@ description = "Personal AI assistant with Claude Code + Telegram"
 requires-python = ">=3.11"
 dependencies = [
     "telethon>=1.36.0",
+    "python-socks[asyncio]>=2.0.0",
     "pydantic-settings>=2.0.0",
     "aiosqlite>=0.19.0",
     "apscheduler>=3.10.0",

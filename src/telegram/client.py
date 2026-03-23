@@ -2,10 +2,28 @@
 Telegram Client — создание и управление Telethon клиентом.
 """
 
+from urllib.parse import urlparse
+
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 from src.config import settings
+
+
+def _parse_http_proxy(url: str) -> tuple | None:
+    """Парсит HTTP_PROXY URL в формат Telethon: (type, addr, port, ..., username, password)."""
+    parsed = urlparse(url)
+    if not parsed.hostname or not parsed.port:
+        return None
+    import python_socks
+    return (
+        python_socks.ProxyType.HTTP,
+        parsed.hostname,
+        parsed.port,
+        True,
+        parsed.username,
+        parsed.password,
+    )
 
 
 def create_client(session: str | None = None) -> TelegramClient:
@@ -19,6 +37,7 @@ def create_client(session: str | None = None) -> TelegramClient:
         Настроенный TelegramClient.
     """
     session_obj = StringSession(session) if session else StringSession()
+    proxy = _parse_http_proxy(settings.http_proxy) if settings.http_proxy else None
 
     return TelegramClient(
         session=session_obj,
@@ -27,6 +46,7 @@ def create_client(session: str | None = None) -> TelegramClient:
         device_model="arm64",
         system_version="23.5.0",
         app_version="1.36.0",
+        proxy=proxy,
     )
 
 

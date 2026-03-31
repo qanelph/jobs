@@ -62,6 +62,7 @@ class UserSession:
         self._is_querying: bool = False
         self._client: ClaudeSDKClient | None = None
         self._query_lock: asyncio.Lock = asyncio.Lock()
+        self._failed_mcp: list[str] = []
 
         from src.tools import create_tools_server
         self._tools_server = create_tools_server()
@@ -135,12 +136,8 @@ class UserSession:
         self._clear_incoming_file()
         return "\n".join(lines)
 
-    def _build_options(self, *, skip_external_mcp: bool = False) -> ClaudeAgentOptions:
-        """Создаёт опции для клиента.
-
-        Args:
-            skip_external_mcp: Не подключать внешние MCP серверы (fallback при initialize timeout).
-        """
+    def _build_options(self) -> ClaudeAgentOptions:
+        """Создаёт опции для клиента (без external MCP — они добавляются lazy)."""
         env = os.environ.copy()
         if settings.http_proxy:
             env["HTTP_PROXY"] = settings.http_proxy
@@ -149,12 +146,8 @@ class UserSession:
         if settings.anthropic_api_key:
             env["ANTHROPIC_API_KEY"] = settings.anthropic_api_key
 
+        # Только встроенные MCP: jobs tools (in-process) + browser
         mcp_servers = {"jobs": self._tools_server}
-
-        if self.is_owner and not skip_external_mcp:
-            mcp_config = get_mcp_config()
-            external_servers = mcp_config.to_mcp_json()
-            mcp_servers.update(external_servers)
 
         if self.is_owner:
             mcp_servers["browser"] = {
@@ -210,16 +203,25 @@ class UserSession:
         """Логирует stderr от Claude Code CLI."""
         logger.debug(f"claude-cli stderr: {line}")
 
-    async def _create_client(self, *, skip_external_mcp: bool = False) -> ClaudeSDKClient:
-        """Создаёт и подключает новый клиент."""
-        options = self._build_options(skip_external_mcp=skip_external_mcp)
+    async def _create_client(self) -> ClaudeSDKClient:
+        """Создаёт и подключает клиент, затем lazy-добавляет external MCP."""
+        options = self._build_options()
         options.stderr = self._stderr_handler
         client = ClaudeSDKClient(options=options)
         await client.connect()
-        if skip_external_mcp:
-            logger.info(f"Client connected [{self.telegram_id}] (without external MCP)")
-        else:
-            logger.debug(f"Client connected [{self.telegram_id}]")
+        logger.debug(f"Client connected [{self.telegram_id}]")
+
+        # Lazy add external MCP серверов (SDK 0.1.46+)
+        if self.is_owner and hasattr(client, "add_mcp_server"):
+            mcp_config = get_mcp_config()
+            for name, server in mcp_config.get_enabled_servers().items():
+                try:
+                    await client.add_mcp_server(name, server.to_mcp_json())
+                    logger.debug(f"MCP {name} added [{self.telegram_id}]")
+                except Exception as e:
+                    self._failed_mcp.append(name)
+                    logger.warning(f"MCP {name} failed [{self.telegram_id}]: {e}")
+
         return client
 
     @staticmethod
@@ -284,13 +286,10 @@ class UserSession:
 
             try:
                 async with asyncio.timeout(QUERY_TIMEOUT_SECONDS):
-                    # Первый connect без external MCP (npx серверы долго стартуют).
-                    # При init timeout retry тоже без них.
-                    skip_external_mcp = not bool(self._session_id)
                     credentials_refreshed = False
                     for attempt in range(4):
                         try:
-                            client = await self._create_client(skip_external_mcp=skip_external_mcp)
+                            client = await self._create_client()
                             self._client = client
                             await client.query(full_prompt)
                             interrupted = False
@@ -321,13 +320,6 @@ class UserSession:
                             if attempt == 0 and had_session and not text_parts:
                                 logger.warning(f"Resume failed [{self.telegram_id}], retrying: {e}")
                                 self._reset_stale_session()
-                                continue
-                            if not skip_external_mcp and self._is_init_timeout(e) and self.is_owner:
-                                logger.warning(
-                                    f"Init timeout [{self.telegram_id}], "
-                                    "retrying without external MCP servers"
-                                )
-                                skip_external_mcp = True
                                 continue
                             if not credentials_refreshed and self._is_auth_error(e):
                                 logger.warning(
@@ -420,12 +412,10 @@ class UserSession:
 
         try:
             async with asyncio.timeout(QUERY_TIMEOUT_SECONDS):
-                # Первый connect без external MCP (npx серверы долго стартуют).
-                skip_external_mcp = not bool(self._session_id)
                 credentials_refreshed = False
                 for attempt in range(4):
                     try:
-                        client = await self._create_client(skip_external_mcp=skip_external_mcp)
+                        client = await self._create_client()
                         self._client = client
                         await client.query(full_prompt)
                         interrupted = False
@@ -461,13 +451,6 @@ class UserSession:
                         if attempt == 0 and had_session and not text_buffer:
                             logger.warning(f"Resume failed [{self.telegram_id}], retrying: {e}")
                             self._reset_stale_session()
-                            continue
-                        if not skip_external_mcp and self._is_init_timeout(e) and self.is_owner:
-                            logger.warning(
-                                f"Init timeout [{self.telegram_id}], "
-                                "retrying without external MCP servers"
-                            )
-                            skip_external_mcp = True
                             continue
                         if not credentials_refreshed and self._is_auth_error(e):
                             logger.warning(

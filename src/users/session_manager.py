@@ -284,7 +284,9 @@ class UserSession:
 
             try:
                 async with asyncio.timeout(QUERY_TIMEOUT_SECONDS):
-                    skip_external_mcp = False
+                    # Первый connect без external MCP (npx серверы долго стартуют).
+                    # При init timeout retry тоже без них.
+                    skip_external_mcp = not bool(self._session_id)
                     credentials_refreshed = False
                     for attempt in range(4):
                         try:
@@ -418,7 +420,8 @@ class UserSession:
 
         try:
             async with asyncio.timeout(QUERY_TIMEOUT_SECONDS):
-                skip_external_mcp = False
+                # Первый connect без external MCP (npx серверы долго стартуют).
+                skip_external_mcp = not bool(self._session_id)
                 credentials_refreshed = False
                 for attempt in range(4):
                     try:

@@ -62,7 +62,6 @@ class UserSession:
         self._is_querying: bool = False
         self._client: ClaudeSDKClient | None = None
         self._query_lock: asyncio.Lock = asyncio.Lock()
-        self._failed_mcp: list[str] = []
 
         from src.tools import create_tools_server
         self._tools_server = create_tools_server()
@@ -211,24 +210,26 @@ class UserSession:
         await client.connect()
         logger.debug(f"Client connected [{self.telegram_id}]")
 
-        # Lazy add external MCP серверов (SDK 0.1.46+)
+        # Lazy add external MCP серверов параллельно (SDK 0.1.46+)
         if self.is_owner and hasattr(client, "add_mcp_server"):
             mcp_config = get_mcp_config()
-            for name, server in mcp_config.get_enabled_servers().items():
-                try:
-                    await client.add_mcp_server(name, server.to_mcp_json())
-                    logger.debug(f"MCP {name} added [{self.telegram_id}]")
-                except Exception as e:
-                    self._failed_mcp.append(name)
-                    logger.warning(f"MCP {name} failed [{self.telegram_id}]: {e}")
+            servers = mcp_config.get_enabled_servers()
+            if servers:
+                async def _add_one(name: str, cfg: dict) -> None:
+                    try:
+                        await client.add_mcp_server(name, cfg)
+                        logger.debug(f"MCP {name} added [{self.telegram_id}]")
+                    except (TypeError, AttributeError, ValueError, KeyError, ImportError):
+                        raise
+                    except Exception:
+                        logger.warning(f"MCP {name} failed [{self.telegram_id}]", exc_info=True)
+
+                await asyncio.gather(
+                    *[_add_one(n, s.to_mcp_json()) for n, s in servers.items()],
+                    return_exceptions=True,
+                )
 
         return client
-
-    @staticmethod
-    def _is_init_timeout(error: Exception) -> bool:
-        """Проверяет, вызвана ли ошибка таймаутом инициализации MCP."""
-        msg = str(error).lower()
-        return "control request timeout" in msg and "initialize" in msg
 
     @staticmethod
     def _is_auth_error(error: Exception) -> bool:

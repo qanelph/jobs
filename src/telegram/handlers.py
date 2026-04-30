@@ -330,6 +330,11 @@ class TelegramHandlers:
         channel = transport.mode.value  # "telethon" или "bot"
         session_key = f"{channel}:{user_id}"
 
+        # Тугглер: игнорируем внешних пользователей если включён флаг.
+        if not is_owner and settings.ignore_external_users:
+            logger.debug(f"[{user_id}] Ignored (ignore_external_users=True)")
+            return
+
         # /help — список команд
         if msg.text and msg.text.strip().lower() == "/help":
             help_text = (

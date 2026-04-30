@@ -106,6 +106,11 @@ class Settings(BaseSettings):
             return 30
         return v
 
+    # Если True — игнорировать любые сообщения не от owner'ов (внешние юзеры).
+    # Удобно когда бот используется только для одного-двух админов и не должен
+    # тратить токены на чужих.
+    ignore_external_users: bool = False
+
     # Browser (CDP via HAProxy)
     browser_cdp_url: str = "http://browser:9223"
 
@@ -151,6 +156,7 @@ MUTABLE_FIELDS: frozenset[str] = frozenset({
     "tg_api_hash",
     "tg_user_id",
     "tg_owner_ids",
+    "ignore_external_users",
 })
 
 OVERRIDES_FILE = "config_overrides.json"

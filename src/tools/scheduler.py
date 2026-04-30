@@ -109,7 +109,9 @@ async def schedule_task(args: dict[str, Any]) -> dict[str, Any]:
 
     time_display = scheduled_at.strftime("%d.%m %H:%M")
     repeat_str = f", повтор: {repeat}" if repeat else ""
-    model_str = f", модель: {model}" if model else ""
+    # model — потенциально мусорная строка от LLM, режем длину для лога.
+    model_short = (model[:40] if model else "")
+    model_str = f", модель: {model_short}" if model_short else ""
     logger.info(f"Scheduled [{task.id}]: {title[:40]}... at {time_display}{repeat_str}{model_str}")
 
     return _text(f"[{task.id}] {time_display}{repeat_str}{model_str}\n{title}")

@@ -570,7 +570,8 @@ class UsersRepository:
              recipients_json, model),
         )
         await db.commit()
-        logger.info(f"Task created: [{task_id}] kind={kind} assignee={assignee_id} model={model}")
+        model_short = (model[:40] if model else None)
+        logger.info(f"Task created: [{task_id}] kind={kind} assignee={assignee_id} model={model_short}")
 
         return await self.get_task(task_id)
 

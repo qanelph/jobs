@@ -34,18 +34,20 @@ QUERY_TIMEOUT_SECONDS = 7200  # 2 часа
 # без него GC может забрать task до того, как он отработает (Python 3.11+).
 _pending_usage_tasks: set[asyncio.Task] = set()
 
-# Короткие алиасы — Anthropic поддерживает суффикс `-latest`, который сам
-# резолвится на самую свежую модель серии. Никакого хардкода версий, при
-# выходе новой haiku/sonnet/opus она подтянется автоматически.
+# Короткие алиасы серии → текущая флагманская версия.
+# TODO: хорошо бы фетчить /v1/models и автоматически выбирать самую свежую
+# версию серии при выходе новой — но Anthropic суффикс `-latest` не
+# поддерживает, поэтому это требует периодического фонового запроса к API
+# и кеша. Пока обновлять при выходе новой модели руками.
 MODEL_ALIASES: dict[str, str] = {
-    "haiku": "claude-haiku-latest",
-    "sonnet": "claude-sonnet-latest",
-    "opus": "claude-opus-latest",
+    "haiku": "claude-haiku-4-5",
+    "sonnet": "claude-sonnet-4-6",
+    "opus": "claude-opus-4-7",
 }
 
 
 def resolve_model_alias(model: str | None) -> str | None:
-    """`haiku`/`sonnet`/`opus` → `claude-{family}-latest`. Полное имя — как есть."""
+    """`haiku`/`sonnet`/`opus` → текущая версия серии. Полное имя — как есть."""
     if not model:
         return None
     return MODEL_ALIASES.get(model.lower(), model)

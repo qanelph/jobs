@@ -94,8 +94,11 @@ async def refresh_once() -> bool:
         logger.debug("anthropic_models: нет credentials — пропускаем refresh")
         return False
 
+    # Anthropic API в РФ часто доступен только через прокси — пробрасываем
+    # настройку, как это делает _fetch_usage в src/telegram/handlers.py.
+    proxy = settings.http_proxy or None
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, trust_env=False, proxy=proxy) as client:
             r = await client.get(MODELS_API_URL, headers=headers)
     except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as exc:
         logger.warning("anthropic_models fetch failed: %s", exc)

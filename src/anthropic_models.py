@@ -101,6 +101,12 @@ async def refresh_once() -> bool:
         logger.warning("anthropic_models fetch failed: %s", exc)
         return False
 
+    if r.status_code in (401, 403):
+        logger.warning(
+            "anthropic_models: токен невалиден (status=%s) — переподключи OAuth/обнови ANTHROPIC_API_KEY",
+            r.status_code,
+        )
+        return False
     if r.status_code != 200:
         logger.warning(
             "anthropic_models non-2xx: status=%s body=%s",
@@ -130,10 +136,26 @@ async def refresh_once() -> bool:
 
 
 async def refresh_loop() -> None:
-    """Фоновый цикл: первый refresh сразу, далее раз в час."""
+    """Фоновый цикл моделей.
+
+    На старте сначала пытается заполнить кэш быстро (с короткими интервалами),
+    чтобы не висеть час на хардкод-фолбэке если был транзиентный сбой DNS/сети.
+    После первого успеха переходит на 1 час между попытками.
+    """
+    backoff_seq = [60, 300]  # 1 мин, потом 5 мин до первого успеха
+    succeeded = False
     while True:
         try:
-            await refresh_once()
+            ok = await refresh_once()
         except Exception:
             logger.exception("anthropic_models refresh_loop error")
-        await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
+            ok = False
+
+        if ok:
+            succeeded = True
+
+        if succeeded:
+            await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
+        else:
+            delay = backoff_seq.pop(0) if backoff_seq else REFRESH_INTERVAL_SECONDS
+            await asyncio.sleep(delay)

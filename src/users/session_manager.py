@@ -305,6 +305,7 @@ class UserSession:
                                 elif isinstance(message, ResultMessage):
                                     if message.session_id:
                                         self._save_session_id(message.session_id)
+                                    self._schedule_record_usage(message)
 
                                 if not interrupted and self._incoming:
                                     await client.interrupt()
@@ -354,6 +355,7 @@ class UserSession:
                             elif isinstance(message, ResultMessage):
                                 if message.session_id:
                                     self._save_session_id(message.session_id)
+                                self._schedule_record_usage(message)
 
                             if not interrupted and self._incoming:
                                 await client.interrupt()
@@ -386,21 +388,38 @@ class UserSession:
             return f"Bash:{block.input['command']}"
         return block.name
 
-    async def _record_usage(self, message: ResultMessage) -> None:
-        """Сохраняет usage из ResultMessage. Не должен ронять основной flow."""
+    def _schedule_record_usage(self, message: ResultMessage) -> None:
+        """Fire-and-forget сохранение usage — не блокирует стрим."""
         if not getattr(message, "usage", None):
             return
+        asyncio.create_task(self._record_usage_safe(
+            telegram_id=self.telegram_id,
+            session_id=getattr(message, "session_id", None),
+            usage=dict(message.usage or {}),
+            total_cost_usd=getattr(message, "total_cost_usd", None),
+            duration_ms=getattr(message, "duration_ms", None),
+        ))
+
+    @staticmethod
+    async def _record_usage_safe(
+        *,
+        telegram_id: int,
+        session_id: str | None,
+        usage: dict,
+        total_cost_usd: float | None,
+        duration_ms: int | None,
+    ) -> None:
         try:
             from src.users.repository import get_users_repository
             await get_users_repository().record_usage_event(
-                telegram_id=self.telegram_id,
-                session_id=getattr(message, "session_id", None),
-                usage=message.usage or {},
-                total_cost_usd=getattr(message, "total_cost_usd", None),
-                duration_ms=getattr(message, "duration_ms", None),
+                telegram_id=telegram_id,
+                session_id=session_id,
+                usage=usage,
+                total_cost_usd=total_cost_usd,
+                duration_ms=duration_ms,
             )
         except Exception as e:
-            logger.warning(f"Usage record failed [{self.telegram_id}]: {e}")
+            logger.warning(f"Usage record failed [{telegram_id}]: {e}")
 
     async def query_stream(self, prompt: str) -> AsyncIterator[tuple[str | None, str | None, bool]]:
         """
@@ -452,7 +471,7 @@ class UserSession:
                             elif isinstance(message, ResultMessage):
                                 if message.session_id:
                                     self._save_session_id(message.session_id)
-                                await self._record_usage(message)
+                                self._schedule_record_usage(message)
 
                             if not interrupted and self._incoming:
                                 await client.interrupt()
@@ -508,7 +527,7 @@ class UserSession:
                         elif isinstance(message, ResultMessage):
                             if message.session_id:
                                 self._save_session_id(message.session_id)
-                            await self._record_usage(message)
+                            self._schedule_record_usage(message)
 
                         if not interrupted and self._incoming:
                             await client.interrupt()

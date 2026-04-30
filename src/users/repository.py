@@ -5,7 +5,7 @@ Repository — хранение данных о пользователях и з
 import asyncio
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import aiosqlite
 from loguru import logger
@@ -21,6 +21,7 @@ class UsersRepository:
         self._db_path = db_path
         self._db: aiosqlite.Connection | None = None
         self._db_lock = asyncio.Lock()  # Защита от race condition
+        self._usage_lock = asyncio.Lock()  # Сериализует write в usage_events
 
     async def _get_db(self) -> aiosqlite.Connection:
         if self._db is not None:
@@ -112,21 +113,7 @@ class UsersRepository:
         # Миграция из старых таблиц (user_tasks → tasks)
         await self._migrate_old_tables()
 
-        # Учёт потребления токенов Claude SDK
-        await self._db.execute("""
-            CREATE TABLE IF NOT EXISTS usage_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts TEXT NOT NULL,
-                telegram_id INTEGER,
-                session_id TEXT,
-                input_tokens INTEGER NOT NULL DEFAULT 0,
-                output_tokens INTEGER NOT NULL DEFAULT 0,
-                cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
-                cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
-                total_cost_usd REAL,
-                duration_ms INTEGER
-            )
-        """)
+        # NB: usage_events DDL — в src/migrations/m002_usage_events.py.
 
         # Индексы
         await self._db.execute(
@@ -143,9 +130,6 @@ class UsersRepository:
         )
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_users_username ON external_users(username)"
-        )
-        await self._db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_usage_events_ts ON usage_events(ts)"
         )
 
         await self._db.commit()
@@ -714,32 +698,46 @@ class UsersRepository:
     ) -> None:
         """Сохраняет один usage-event (по ResultMessage от Claude SDK)."""
         db = await self._get_db()
-        ts = datetime.utcnow().isoformat()
-        await db.execute(
-            """
-            INSERT INTO usage_events (
-                ts, telegram_id, session_id,
-                input_tokens, output_tokens,
-                cache_creation_input_tokens, cache_read_input_tokens,
-                total_cost_usd, duration_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                ts,
-                telegram_id,
-                session_id,
-                int(usage.get("input_tokens") or 0),
-                int(usage.get("output_tokens") or 0),
-                int(usage.get("cache_creation_input_tokens") or 0),
-                int(usage.get("cache_read_input_tokens") or 0),
-                total_cost_usd,
-                duration_ms,
-            ),
-        )
-        await db.commit()
+        ts = datetime.now(timezone.utc).isoformat()
+        async with self._usage_lock:
+            await db.execute(
+                """
+                INSERT INTO usage_events (
+                    ts, telegram_id, session_id,
+                    input_tokens, output_tokens,
+                    cache_creation_input_tokens, cache_read_input_tokens,
+                    total_cost_usd, duration_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ts,
+                    telegram_id,
+                    session_id,
+                    int(usage.get("input_tokens") or 0),
+                    int(usage.get("output_tokens") or 0),
+                    int(usage.get("cache_creation_input_tokens") or 0),
+                    int(usage.get("cache_read_input_tokens") or 0),
+                    total_cost_usd,
+                    duration_ms,
+                ),
+            )
+            await db.commit()
 
     async def get_usage_totals(self) -> dict:
         """Кумулятивные суммы usage_events + крайние ts."""
+        empty = {
+            "totals": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "total_cost_usd": 0.0,
+                "events_count": 0,
+            },
+            "first_event_ts": None,
+            "last_event_ts": None,
+        }
+
         db = await self._get_db()
         cursor = await db.execute(
             """
@@ -756,6 +754,8 @@ class UsersRepository:
             """
         )
         row = await cursor.fetchone()
+        if row is None:
+            return empty
         return {
             "totals": {
                 "input_tokens": int(row["input_tokens"]),

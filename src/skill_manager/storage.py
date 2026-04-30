@@ -174,6 +174,14 @@ def import_zip(
             if info.is_dir():
                 continue
             path = info.filename
+            # macOS Finder при упаковке кладёт мусорные resource-форки в __MACOSX/
+            # и отдельные .DS_Store. Тихо пропускаем — это не ошибка пользователя.
+            if path.startswith("__MACOSX/") or path.endswith("/.DS_Store") or path == ".DS_Store":
+                continue
+            # Снимаем верхний префикс "skills/", если он есть — частый случай,
+            # когда юзер заархивировал собственную папку skills/ через Finder.
+            if path.startswith("skills/"):
+                path = path[len("skills/") :]
             # Ожидаем строго "{name}/SKILL.md", без подпапок и без traversal.
             parts = path.split("/")
             if len(parts) != 2 or parts[1] != SKILL_FILENAME:

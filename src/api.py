@@ -12,8 +12,11 @@ import types
 from pathlib import Path
 from typing import Any, Union, get_args, get_origin
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, File, Header, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel
+
+from src.skill_manager import storage as skills_storage
 
 from src.config import (
     MUTABLE_FIELDS,
@@ -87,6 +90,18 @@ class UpdateCredentials(BaseModel):
     """Push обновлённых OAuth credentials от оркестратора."""
 
     credentials: dict[str, Any]
+
+
+class SkillContent(BaseModel):
+    """Тело PUT /skills/{name}."""
+
+    content: str
+
+
+class BulkExportRequest(BaseModel):
+    """Тело POST /skills/bulk-export."""
+
+    names: list[str] | None = None
 
 
 class PatchConfig(BaseModel):
@@ -213,5 +228,87 @@ def create_app() -> FastAPI:
                 "result": t.result,
             })
         return {"items": items}
+
+    @app.get("/skills")
+    async def list_skills_route(
+        authorization: str = Header(...),
+    ) -> dict[str, Any]:
+        _verify_secret(authorization)
+        return {"items": skills_storage.list_skills()}
+
+    @app.get("/skills/{name}")
+    async def get_skill_route(
+        name: str,
+        authorization: str = Header(...),
+    ) -> dict[str, Any]:
+        _verify_secret(authorization)
+        if not skills_storage.is_valid_name(name):
+            raise HTTPException(status_code=400, detail="invalid skill name")
+        content = skills_storage.read_skill(name)
+        if content is None:
+            raise HTTPException(status_code=404, detail="skill not found")
+        return {"name": name, "content": content}
+
+    @app.put("/skills/{name}")
+    async def put_skill_route(
+        name: str,
+        body: SkillContent,
+        authorization: str = Header(...),
+        overwrite: bool = Query(False),
+    ) -> dict[str, str]:
+        _verify_secret(authorization)
+        if not skills_storage.is_valid_name(name):
+            raise HTTPException(status_code=400, detail="invalid skill name")
+        try:
+            status = skills_storage.write_skill(name, body.content, overwrite=overwrite)
+        except ValueError as exc:
+            msg = str(exc)
+            if msg == "skill too large":
+                raise HTTPException(status_code=413, detail=msg)
+            raise HTTPException(status_code=400, detail=msg)
+        if status == "skipped":
+            raise HTTPException(status_code=409, detail="skill already exists")
+        return {"status": status}
+
+    @app.delete("/skills/{name}", status_code=204)
+    async def delete_skill_route(
+        name: str,
+        authorization: str = Header(...),
+    ) -> Response:
+        _verify_secret(authorization)
+        if not skills_storage.is_valid_name(name):
+            raise HTTPException(status_code=400, detail="invalid skill name")
+        if not skills_storage.delete_skill(name):
+            raise HTTPException(status_code=404, detail="skill not found")
+        return Response(status_code=204)
+
+    @app.post("/skills/bulk-export")
+    async def bulk_export_route(
+        body: BulkExportRequest,
+        authorization: str = Header(...),
+    ) -> Response:
+        _verify_secret(authorization)
+        data = skills_storage.export_zip(body.names)
+        return Response(
+            content=data,
+            media_type="application/zip",
+            headers={"Content-Disposition": 'attachment; filename="skills.zip"'},
+        )
+
+    @app.post("/skills/bulk-import")
+    async def bulk_import_route(
+        archive: UploadFile = File(...),
+        authorization: str = Header(...),
+        overwrite: bool = Query(False),
+    ) -> dict[str, Any]:
+        _verify_secret(authorization)
+        data = await archive.read()
+        if len(data) > skills_storage.MAX_ARCHIVE_SIZE:
+            raise HTTPException(status_code=413, detail="archive too large")
+        try:
+            results = skills_storage.import_zip(data, overwrite=overwrite)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {"results": results}
 
     return app

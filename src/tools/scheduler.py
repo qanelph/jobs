@@ -31,12 +31,15 @@ _tz = settings.get_timezone()
 @tool(
     "schedule_task",
     "Schedule a task. Time format: 'HH:MM' for today, 'YYYY-MM-DD HH:MM' for specific date. "
-    "Repeat: '24h', '1h', '30m', or None. prompt is optional (defaults to title).",
+    "Repeat: '24h', '1h', '30m', or None. prompt is optional (defaults to title). "
+    "recipient_ids: список Telegram ID кому слать отчёт о выполнении. "
+    "По умолчанию — текущий инициатор. Передай [] чтобы выключить отчёт.",
     {
         "title": str,
         "prompt": str,
         "time": str,
         "repeat": str,
+        "recipient_ids": list,
     },
 )
 async def schedule_task(args: dict[str, Any]) -> dict[str, Any]:
@@ -67,8 +70,23 @@ async def schedule_task(args: dict[str, Any]) -> dict[str, Any]:
     # Парсим repeat
     repeat_seconds = _parse_repeat(repeat) if repeat else None
 
+    # Получатели: явный список (включая []) или fallback на инициатора.
+    if "recipient_ids" in args and args["recipient_ids"] is not None:
+        raw = args["recipient_ids"]
+        if not isinstance(raw, list):
+            return _error("recipient_ids должен быть списком")
+        try:
+            recipient_ids = [int(x) for x in raw]
+        except (TypeError, ValueError):
+            return _error("recipient_ids должен содержать только числа (Telegram ID)")
+    else:
+        from src.users.tools import get_current_user_id
+        current = get_current_user_id()
+        recipient_ids = [current] if current is not None else None
+
     # Создаём Task с kind="scheduled"
     from src.users.repository import get_users_repository
+    from src.users.tools import get_current_owner_id
     repo = get_users_repository()
 
     context = {"prompt": prompt} if prompt else {}
@@ -76,10 +94,11 @@ async def schedule_task(args: dict[str, Any]) -> dict[str, Any]:
     task = await repo.create_task(
         title=title,
         kind="scheduled",
-        created_by=settings.primary_owner_id,
+        created_by=get_current_owner_id() or settings.primary_owner_id,
         context=context,
         schedule_at=scheduled_at,
         schedule_repeat=repeat_seconds,
+        recipient_ids=recipient_ids,
     )
 
     time_display = scheduled_at.strftime("%d.%m %H:%M")
@@ -188,6 +207,7 @@ class SchedulerRunner:
                     context={"task_id": task.id},
                     preview_message=f"💎 Выполняю [{task.id}]:\n\n{task.title}",
                     result_prefix=f"💎 Результат [{task.id}]:",
+                    recipient_ids=task.recipient_ids,
                 )
                 await self._executor.execute(event)
 

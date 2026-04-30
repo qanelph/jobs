@@ -20,7 +20,7 @@ from loguru import logger
 
 from src.config import settings, set_owner_info
 from src.users import get_session_manager, get_users_repository
-from src.users.tools import set_telegram_sender, set_context_sender, set_buffer_sender, set_task_executor
+from src.users.tools import set_telegram_sender, set_context_sender, set_buffer_sender, set_task_executor, set_current_user
 from src.triggers.executor import TriggerExecutor
 from src.media import transcribe_audio, save_media, MAX_MEDIA_SIZE
 from src.updater import Updater
@@ -298,6 +298,8 @@ class TelegramHandlers:
                 "Не жди подтверждения от owner'а. НЕ дублируй текст уведомления дословно.]"
             )
 
+            set_current_user(user_id)
+
             response = await session.query(prompt)
 
             if response and response != "Нет ответа":
@@ -423,6 +425,9 @@ class TelegramHandlers:
         session_manager = get_session_manager()
         user_display_name = msg.sender_first_name or msg.sender_username or str(user_id)
         session = session_manager.get_session(user_id, user_display_name, channel=channel)
+
+        # Контекст для tools: send-tools будут писать тому, кто инициировал диалог.
+        set_current_user(user_id)
 
         # Если сессия уже обрабатывает запрос — буферизуем в incoming
         if session._is_querying:
@@ -560,6 +565,9 @@ class TelegramHandlers:
         # 6. Получаем групповую сессию
         session_manager = get_session_manager()
         session = session_manager.get_group_session(msg.chat_id, chat_title, channel)
+
+        # Контекст для tools — sender owner'а в группе.
+        set_current_user(msg.sender_id)
 
         # Если сессия уже обрабатывает запрос — буферизуем
         if session._is_querying:

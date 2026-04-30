@@ -30,6 +30,10 @@ from src.plugin_manager.config import get_plugin_config
 
 QUERY_TIMEOUT_SECONDS = 7200  # 2 часа
 
+# Strong reference на pending fire-and-forget записи usage —
+# без него GC может забрать task до того, как он отработает (Python 3.11+).
+_pending_usage_tasks: set[asyncio.Task] = set()
+
 
 class UserSession:
     """
@@ -392,13 +396,15 @@ class UserSession:
         """Fire-and-forget сохранение usage — не блокирует стрим."""
         if not getattr(message, "usage", None):
             return
-        asyncio.create_task(self._record_usage_safe(
+        task = asyncio.create_task(self._record_usage_safe(
             telegram_id=self.telegram_id,
             session_id=getattr(message, "session_id", None),
             usage=dict(message.usage or {}),
             total_cost_usd=getattr(message, "total_cost_usd", None),
             duration_ms=getattr(message, "duration_ms", None),
         ))
+        _pending_usage_tasks.add(task)
+        task.add_done_callback(_pending_usage_tasks.discard)
 
     @staticmethod
     async def _record_usage_safe(
@@ -418,8 +424,10 @@ class UserSession:
                 total_cost_usd=total_cost_usd,
                 duration_ms=duration_ms,
             )
-        except Exception as e:
-            logger.warning(f"Usage record failed [{telegram_id}]: {e}")
+        except Exception:
+            logger.opt(exception=True).warning(
+                f"Usage record failed [{telegram_id}]"
+            )
 
     async def query_stream(self, prompt: str) -> AsyncIterator[tuple[str | None, str | None, bool]]:
         """

@@ -190,4 +190,28 @@ def create_app() -> FastAPI:
         from src.users.repository import get_users_repository
         return await get_users_repository().get_usage_totals()
 
+    @app.get("/scheduled")
+    async def get_scheduled(
+        authorization: str = Header(...),
+    ) -> dict[str, Any]:
+        """Список scheduled-задач агента — title, schedule, model, последний результат."""
+        _verify_secret(authorization)
+        from src.users.repository import get_users_repository
+        repo = get_users_repository()
+        tasks = await repo.list_tasks(kind="scheduled", include_done=True)
+        items = []
+        for t in tasks:
+            items.append({
+                "id": t.id,
+                "title": t.title,
+                "status": t.status,
+                "schedule_at": t.schedule_at.isoformat() if t.schedule_at else None,
+                "schedule_repeat": t.schedule_repeat,
+                "model": t.model,
+                "recipient_ids": t.recipient_ids,
+                "created_at": t.created_at.isoformat(),
+                "result": t.result,
+            })
+        return {"items": items}
+
     return app

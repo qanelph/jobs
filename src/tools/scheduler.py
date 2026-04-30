@@ -32,14 +32,18 @@ _tz = settings.get_timezone()
     "schedule_task",
     "Schedule a task. Time format: 'HH:MM' for today, 'YYYY-MM-DD HH:MM' for specific date. "
     "Repeat: '24h', '1h', '30m', or None. prompt is optional (defaults to title). "
-    "recipient_ids: список Telegram ID кому слать отчёт о выполнении. "
-    "По умолчанию — текущий инициатор. Передай [] чтобы выключить отчёт.",
+    "recipient_ids: список Telegram ID кому слать отчёт. По умолчанию — инициатор. "
+    "[] — не слать никому. "
+    "model: 'haiku' / 'sonnet' / 'opus' (alias на самую свежую) или полное имя "
+    "('claude-opus-4-7'). По умолчанию — дефолтная модель агента. Используй жирные "
+    "модели только для тяжёлых задач, лёгкие — для рутины, чтобы экономить токены.",
     {
         "title": str,
         "prompt": str,
         "time": str,
         "repeat": str,
         "recipient_ids": list,
+        "model": str,
     },
 )
 async def schedule_task(args: dict[str, Any]) -> dict[str, Any]:
@@ -47,6 +51,7 @@ async def schedule_task(args: dict[str, Any]) -> dict[str, Any]:
     prompt: str | None = args.get("prompt")
     time_str: str | None = args.get("time")
     repeat: str | None = args.get("repeat")
+    model: str | None = args.get("model") or None
 
     if not title and not prompt:
         return _error("title или prompt обязателен")
@@ -99,13 +104,15 @@ async def schedule_task(args: dict[str, Any]) -> dict[str, Any]:
         schedule_at=scheduled_at,
         schedule_repeat=repeat_seconds,
         recipient_ids=recipient_ids,
+        model=model,
     )
 
     time_display = scheduled_at.strftime("%d.%m %H:%M")
     repeat_str = f", повтор: {repeat}" if repeat else ""
-    logger.info(f"Scheduled [{task.id}]: {title[:40]}... at {time_display}{repeat_str}")
+    model_str = f", модель: {model}" if model else ""
+    logger.info(f"Scheduled [{task.id}]: {title[:40]}... at {time_display}{repeat_str}{model_str}")
 
-    return _text(f"[{task.id}] {time_display}{repeat_str}\n{title}")
+    return _text(f"[{task.id}] {time_display}{repeat_str}{model_str}\n{title}")
 
 
 @tool("cancel_task", "Cancel any task by ID", {"task_id": str})
@@ -208,15 +215,26 @@ class SchedulerRunner:
                     preview_message=f"💎 Выполняю [{task.id}]:\n\n{task.title}",
                     result_prefix=f"💎 Результат [{task.id}]:",
                     recipient_ids=task.recipient_ids,
+                    model=task.model,
                 )
-                await self._executor.execute(event)
+                output = await self._executor.execute(event)
 
-                # One-time: ставим done после успеха
+                # Сохраняем последний результат для отображения в UI.
+                last_result = {
+                    "ran_at": datetime.now().isoformat(),
+                    "output": (output or "")[:500],
+                }
                 if not task.schedule_repeat:
-                    await repo.update_task(task.id, status="done")
+                    await repo.update_task(task.id, status="done", result=last_result)
+                else:
+                    await repo.update_task(task.id, result=last_result)
 
             except Exception as e:
                 logger.error(f"Task [{task.id}] failed: {e}")
+                await repo.update_task(task.id, result={
+                    "ran_at": datetime.now().isoformat(),
+                    "error": str(e)[:500],
+                })
 
 
 # =============================================================================

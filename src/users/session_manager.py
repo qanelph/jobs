@@ -34,6 +34,22 @@ QUERY_TIMEOUT_SECONDS = 7200  # 2 часа
 # без него GC может забрать task до того, как он отработает (Python 3.11+).
 _pending_usage_tasks: set[asyncio.Task] = set()
 
+# Короткие алиасы — Anthropic поддерживает суффикс `-latest`, который сам
+# резолвится на самую свежую модель серии. Никакого хардкода версий, при
+# выходе новой haiku/sonnet/opus она подтянется автоматически.
+MODEL_ALIASES: dict[str, str] = {
+    "haiku": "claude-haiku-latest",
+    "sonnet": "claude-sonnet-latest",
+    "opus": "claude-opus-latest",
+}
+
+
+def resolve_model_alias(model: str | None) -> str | None:
+    """`haiku`/`sonnet`/`opus` → `claude-{family}-latest`. Полное имя — как есть."""
+    if not model:
+        return None
+    return MODEL_ALIASES.get(model.lower(), model)
+
 
 class UserSession:
     """
@@ -53,11 +69,13 @@ class UserSession:
         is_owner: bool = False,
         allowed_tools: list[str] | None = None,
         session_key: str | None = None,
+        model_override: str | None = None,
     ) -> None:
         self.telegram_id = telegram_id
         self.is_owner = is_owner
         self._system_prompt = system_prompt
         self._allowed_tools_override = allowed_tools
+        self._model_override = resolve_model_alias(model_override)
         key = session_key or str(telegram_id)
         self._session_file = session_dir / f"{key}.session"
         self._incoming_file = session_dir / f"{key}.incoming"
@@ -183,7 +201,7 @@ class UserSession:
 
         workspace = Path(settings.workspace_dir)
         options = ClaudeAgentOptions(
-            model=settings.claude_model,
+            model=self._model_override or settings.claude_model,
             cwd=workspace,
             add_dirs=[workspace],
             permission_mode=permission_mode,
@@ -679,16 +697,21 @@ class SessionManager:
             if key == suffix or key.endswith(f":{suffix}")
         ]
 
-    def create_background_session(self) -> UserSession:
-        """Создаёт одноразовую сессию с owner tools для scheduler/triggers."""
+    def create_background_session(self, model: str | None = None) -> UserSession:
+        """Создаёт одноразовую сессию с owner tools для scheduler/triggers.
+
+        model: алиас (`haiku`/`sonnet`/`opus`) или полное имя. None — берётся
+        дефолт из settings.claude_model. Полезно когда тяжёлая задача требует
+        opus, а лёгкая — haiku, чтобы экономить токены."""
         self._ephemeral_counter += 1
         key = -(100 + self._ephemeral_counter)
-        logger.debug(f"Created ephemeral background session [{key}]")
+        logger.debug(f"Created ephemeral background session [{key}] model={model}")
         return UserSession(
             telegram_id=key,
             session_dir=self._session_dir,
             system_prompt=self._get_owner_prompt(),
             is_owner=True,
+            model_override=model,
         )
 
     def create_heartbeat_session(self) -> UserSession:

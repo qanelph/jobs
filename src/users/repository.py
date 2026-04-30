@@ -116,6 +116,12 @@ class UsersRepository:
         except sqlite3.OperationalError:
             pass  # column already exists
 
+        # Миграция: override модели для scheduled-задач
+        try:
+            await self._db.execute("ALTER TABLE tasks ADD COLUMN model TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
         # Миграция из старых таблиц (user_tasks → tasks)
         await self._migrate_old_tables()
 
@@ -539,6 +545,7 @@ class UsersRepository:
         schedule_at: datetime | None = None,
         schedule_repeat: int | None = None,
         recipient_ids: list[int] | None = None,
+        model: str | None = None,
     ) -> Task:
         """Создаёт задачу."""
         import json
@@ -554,16 +561,16 @@ class UsersRepository:
             """
             INSERT INTO tasks (id, title, kind, assignee_id, created_by, deadline,
                                created_at, updated_at, context, schedule_at, schedule_repeat,
-                               recipient_ids)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               recipient_ids, model)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (task_id, title, kind, assignee_id, created_by,
              deadline.isoformat() if deadline else None, now, now, context_json,
              schedule_at.isoformat() if schedule_at else None, schedule_repeat,
-             recipients_json),
+             recipients_json, model),
         )
         await db.commit()
-        logger.info(f"Task created: [{task_id}] kind={kind} assignee={assignee_id} recipients={recipient_ids}")
+        logger.info(f"Task created: [{task_id}] kind={kind} assignee={assignee_id} model={model}")
 
         return await self.get_task(task_id)
 

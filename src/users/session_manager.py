@@ -402,6 +402,7 @@ class UserSession:
             usage=dict(message.usage or {}),
             total_cost_usd=getattr(message, "total_cost_usd", None),
             duration_ms=getattr(message, "duration_ms", None),
+            model=settings.claude_model,
         ))
         _pending_usage_tasks.add(task)
         task.add_done_callback(_pending_usage_tasks.discard)
@@ -414,6 +415,7 @@ class UserSession:
         usage: dict,
         total_cost_usd: float | None,
         duration_ms: int | None,
+        model: str | None,
     ) -> None:
         try:
             from src.users.repository import get_users_repository
@@ -423,6 +425,7 @@ class UserSession:
                 usage=usage,
                 total_cost_usd=total_cost_usd,
                 duration_ms=duration_ms,
+                model=model,
             )
         except Exception:
             logger.opt(exception=True).warning(

@@ -695,6 +695,7 @@ class UsersRepository:
         usage: dict,
         total_cost_usd: float | None,
         duration_ms: int | None,
+        model: str | None = None,
     ) -> None:
         """Сохраняет один usage-event (по ResultMessage от Claude SDK)."""
         db = await self._get_db()
@@ -706,8 +707,8 @@ class UsersRepository:
                     ts, telegram_id, session_id,
                     input_tokens, output_tokens,
                     cache_creation_input_tokens, cache_read_input_tokens,
-                    total_cost_usd, duration_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    total_cost_usd, duration_ms, model
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ts,
@@ -719,12 +720,13 @@ class UsersRepository:
                     int(usage.get("cache_read_input_tokens") or 0),
                     total_cost_usd,
                     duration_ms,
+                    model,
                 ),
             )
             await db.commit()
 
     async def get_usage_totals(self) -> dict:
-        """Кумулятивные суммы usage_events + крайние ts."""
+        """Кумулятивные суммы usage_events + крайние ts + breakdown по моделям."""
         empty = {
             "totals": {
                 "input_tokens": 0,
@@ -734,28 +736,59 @@ class UsersRepository:
                 "total_cost_usd": 0.0,
                 "events_count": 0,
             },
+            "by_model": [],
             "first_event_ts": None,
             "last_event_ts": None,
         }
 
         db = await self._get_db()
-        cursor = await db.execute(
-            """
-            SELECT
-                COALESCE(SUM(input_tokens), 0)                  AS input_tokens,
-                COALESCE(SUM(output_tokens), 0)                 AS output_tokens,
-                COALESCE(SUM(cache_creation_input_tokens), 0)   AS cache_creation_input_tokens,
-                COALESCE(SUM(cache_read_input_tokens), 0)       AS cache_read_input_tokens,
-                COALESCE(SUM(total_cost_usd), 0.0)              AS total_cost_usd,
-                COUNT(*)                                        AS events_count,
-                MIN(ts)                                         AS first_event_ts,
-                MAX(ts)                                         AS last_event_ts
-            FROM usage_events
-            """
-        )
-        row = await cursor.fetchone()
-        if row is None:
-            return empty
+        # Сериализуем чтение с записью, чтобы totals и by_model были из одного snapshot'а.
+        async with self._usage_lock:
+            cursor = await db.execute(
+                """
+                SELECT
+                    COALESCE(SUM(input_tokens), 0)                  AS input_tokens,
+                    COALESCE(SUM(output_tokens), 0)                 AS output_tokens,
+                    COALESCE(SUM(cache_creation_input_tokens), 0)   AS cache_creation_input_tokens,
+                    COALESCE(SUM(cache_read_input_tokens), 0)       AS cache_read_input_tokens,
+                    COALESCE(SUM(total_cost_usd), 0.0)              AS total_cost_usd,
+                    COUNT(*)                                        AS events_count,
+                    MIN(ts)                                         AS first_event_ts,
+                    MAX(ts)                                         AS last_event_ts
+                FROM usage_events
+                """
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return empty
+
+            by_model_cursor = await db.execute(
+                """
+                SELECT
+                    model,
+                    COALESCE(SUM(input_tokens), 0)                  AS input_tokens,
+                    COALESCE(SUM(output_tokens), 0)                 AS output_tokens,
+                    COALESCE(SUM(cache_creation_input_tokens), 0)   AS cache_creation_input_tokens,
+                    COALESCE(SUM(cache_read_input_tokens), 0)       AS cache_read_input_tokens,
+                    COALESCE(SUM(total_cost_usd), 0.0)              AS total_cost_usd,
+                    COUNT(*)                                        AS events_count
+                FROM usage_events
+                GROUP BY model
+                """
+            )
+            by_model = [
+                {
+                    "model": m_row["model"],
+                    "input_tokens": int(m_row["input_tokens"]),
+                    "output_tokens": int(m_row["output_tokens"]),
+                    "cache_creation_input_tokens": int(m_row["cache_creation_input_tokens"]),
+                    "cache_read_input_tokens": int(m_row["cache_read_input_tokens"]),
+                    "total_cost_usd": float(m_row["total_cost_usd"]),
+                    "events_count": int(m_row["events_count"]),
+                }
+                for m_row in await by_model_cursor.fetchall()
+            ]
+
         return {
             "totals": {
                 "input_tokens": int(row["input_tokens"]),
@@ -765,6 +798,7 @@ class UsersRepository:
                 "total_cost_usd": float(row["total_cost_usd"]),
                 "events_count": int(row["events_count"]),
             },
+            "by_model": by_model,
             "first_event_ts": row["first_event_ts"],
             "last_event_ts": row["last_event_ts"],
         }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import re
 import shutil
 import zipfile
@@ -88,6 +89,11 @@ def write_skill(name: str, content: str, *, overwrite: bool) -> str:
 
     Возвращает "created" | "replaced" | "skipped".
     Бросает ValueError при невалидном имени или превышении лимита.
+
+    Атомарность: при overwrite=False создание идёт через O_CREAT|O_EXCL —
+    параллельные PUT без overwrite не могут оба «создать» один и тот же
+    SKILL.md (TOCTOU защита). При overwrite=True гонка возможна, но
+    семантически дозволена (последний выигрывает).
     """
     if not is_valid_name(name):
         raise ValueError("invalid skill name")
@@ -96,12 +102,18 @@ def write_skill(name: str, content: str, *, overwrite: bool) -> str:
 
     skill_dir = get_skills_dir() / name
     skill_file = skill_dir / SKILL_FILENAME
-    existed = skill_file.is_file()
-
-    if existed and not overwrite:
-        return "skipped"
-
     skill_dir.mkdir(parents=True, exist_ok=True)
+
+    if not overwrite:
+        try:
+            fd = os.open(skill_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            return "skipped"
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        return "created"
+
+    existed = skill_file.is_file()
     skill_file.write_text(content, encoding="utf-8")
     return "replaced" if existed else "created"
 

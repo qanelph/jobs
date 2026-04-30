@@ -57,7 +57,7 @@ class TriggerStorage:
         # Идемпотентная миграция для существующих БД.
         try:
             await db.execute("ALTER TABLE trigger_subscriptions ADD COLUMN recipient_ids TEXT")
-        except Exception:
+        except aiosqlite.OperationalError:
             pass  # column already exists
         await db.commit()
         logger.debug("TriggerStorage schema initialized")

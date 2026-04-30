@@ -116,15 +116,23 @@ class TriggerExecutor:
         buffer: bool,
     ) -> None:
         """Доставляет сообщение каждому получателю и (опционально) буферизует
-        в его сессию, чтобы Claude увидел контекст при следующем взаимодействии."""
+        в его сессию, чтобы Claude увидел контекст при следующем взаимодействии.
+
+        Ошибка доставки одному получателю не должна блокировать остальных.
+        """
         if not recipients:
             logger.debug("Trigger delivery skipped — recipients=[] (выключено)")
             return
         for uid in recipients:
-            await self._transport.send_message(uid, text)
-            if buffer:
-                self._session_manager.get_session(uid).receive_incoming(
-                    f"[Background task output]\n{text}"
+            try:
+                await self._transport.send_message(uid, text)
+                if buffer:
+                    self._session_manager.get_session(uid).receive_incoming(
+                        f"[Background task output]\n{text}"
+                    )
+            except Exception:
+                logger.opt(exception=True).warning(
+                    f"Trigger delivery failed for recipient={uid}"
                 )
 
     async def send_to_owner(self, text: str, buffer: bool = True) -> None:

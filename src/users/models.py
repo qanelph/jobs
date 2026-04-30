@@ -78,6 +78,10 @@ class Task:
     # [123, 456] = broadcast этим owner'ам.
     recipient_ids: list[int] | None = None
 
+    # Override модели для kind="scheduled". None = используется settings.claude_model.
+    # Можно alias ("haiku", "sonnet", "opus") или полное имя ("claude-opus-4-7").
+    model: str | None = None
+
     @property
     def is_overdue(self) -> bool:
         """Просрочена ли задача."""
@@ -110,4 +114,5 @@ class Task:
             next_step=row.get("next_step"),
             session_id=row.get("session_id"),
             recipient_ids=json.loads(row["recipient_ids"]) if row.get("recipient_ids") else None,
+            model=row.get("model"),
         )

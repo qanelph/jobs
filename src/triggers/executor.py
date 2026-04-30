@@ -57,8 +57,8 @@ class TriggerExecutor:
         if event.preview_message and event.notify_owner:
             await self._deliver(event.preview_message, recipients, buffer=False)
 
-        # Одноразовая сессия с owner tools
-        session = self._session_manager.create_background_session()
+        # Одноразовая сессия с owner tools (опционально на конкретной модели).
+        session = self._session_manager.create_background_session(model=event.model)
         try:
             content = await session.query(event.prompt)
         finally:

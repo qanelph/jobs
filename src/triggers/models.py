@@ -21,6 +21,10 @@ class TriggerEvent:
     # [] = не слать никому (выключено), [123, 456] = broadcast.
     recipient_ids: list[int] | None = None
 
+    # Override модели Claude для выполнения. None = settings.claude_model.
+    # Алиас ("haiku"/"sonnet"/"opus") или полное имя ("claude-opus-4-7").
+    model: str | None = None
+
 
 @dataclass
 class TriggerSubscription:

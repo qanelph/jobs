@@ -177,4 +177,13 @@ def create_app() -> FastAPI:
         creds_path.write_text(json.dumps(body.credentials, indent=2))
         return {"status": "ok"}
 
+    @app.get("/usage")
+    async def get_usage(
+        authorization: str = Header(...),
+    ) -> dict[str, Any]:
+        """Кумулятивные счётчики usage_events — для оркестратора."""
+        _verify_secret(authorization)
+        from src.users.repository import get_users_repository
+        return await get_users_repository().get_usage_totals()
+
     return app

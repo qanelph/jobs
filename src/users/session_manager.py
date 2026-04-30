@@ -386,6 +386,22 @@ class UserSession:
             return f"Bash:{block.input['command']}"
         return block.name
 
+    async def _record_usage(self, message: ResultMessage) -> None:
+        """Сохраняет usage из ResultMessage. Не должен ронять основной flow."""
+        if not getattr(message, "usage", None):
+            return
+        try:
+            from src.users.repository import get_users_repository
+            await get_users_repository().record_usage_event(
+                telegram_id=self.telegram_id,
+                session_id=getattr(message, "session_id", None),
+                usage=message.usage or {},
+                total_cost_usd=getattr(message, "total_cost_usd", None),
+                duration_ms=getattr(message, "duration_ms", None),
+            )
+        except Exception as e:
+            logger.warning(f"Usage record failed [{self.telegram_id}]: {e}")
+
     async def query_stream(self, prompt: str) -> AsyncIterator[tuple[str | None, str | None, bool]]:
         """
         Стримит ответ.
@@ -436,6 +452,7 @@ class UserSession:
                             elif isinstance(message, ResultMessage):
                                 if message.session_id:
                                     self._save_session_id(message.session_id)
+                                await self._record_usage(message)
 
                             if not interrupted and self._incoming:
                                 await client.interrupt()
@@ -491,6 +508,7 @@ class UserSession:
                         elif isinstance(message, ResultMessage):
                             if message.session_id:
                                 self._save_session_id(message.session_id)
+                            await self._record_usage(message)
 
                         if not interrupted and self._incoming:
                             await client.interrupt()

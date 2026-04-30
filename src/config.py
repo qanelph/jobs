@@ -138,8 +138,12 @@ class Settings(BaseSettings):
 
     @property
     def skills_dir(self) -> Path:
-        """Директория со skills."""
-        return self.workspace_dir / "skills"
+        """Директория со skills.
+
+        Совпадает с тем, что монтирует docker-compose: skills/ на хосте → /workspace/.claude/skills/
+        внутри контейнера. SDK с setting_sources=["project"] ищет именно этот путь.
+        """
+        return self.workspace_dir / ".claude" / "skills"
 
 
 settings = Settings()

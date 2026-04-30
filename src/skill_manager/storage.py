@@ -31,7 +31,7 @@ class ImportResult(TypedDict):
 
 
 def get_skills_dir() -> Path:
-    return Path(settings.workspace_dir) / ".claude" / "skills"
+    return settings.skills_dir
 
 
 def is_valid_name(name: str) -> bool:
@@ -63,7 +63,7 @@ def list_skills() -> list[SkillSummary]:
         skill_file = entry / SKILL_FILENAME
         if not skill_file.is_file():
             continue
-        content = skill_file.read_text(errors="replace")
+        content = skill_file.read_text(encoding="utf-8", errors="replace")
         items.append(
             SkillSummary(
                 name=entry.name,
@@ -80,7 +80,7 @@ def read_skill(name: str) -> str | None:
     skill_file = get_skills_dir() / name / SKILL_FILENAME
     if not skill_file.is_file():
         return None
-    return skill_file.read_text(errors="replace")
+    return skill_file.read_text(encoding="utf-8", errors="replace")
 
 
 def write_skill(name: str, content: str, *, overwrite: bool) -> str:
@@ -102,7 +102,7 @@ def write_skill(name: str, content: str, *, overwrite: bool) -> str:
         return "skipped"
 
     skill_dir.mkdir(parents=True, exist_ok=True)
-    skill_file.write_text(content)
+    skill_file.write_text(content, encoding="utf-8")
     return "replaced" if existed else "created"
 
 
@@ -131,10 +131,20 @@ def export_zip(names: list[str] | None) -> bytes:
     return buf.getvalue()
 
 
-def import_zip(data: bytes, *, overwrite: bool) -> list[ImportResult]:
+def import_zip(
+    data: bytes,
+    *,
+    overwrite: bool,
+    only_names: set[str] | None = None,
+) -> list[ImportResult]:
     """Распаковать ZIP и записать каждый SKILL.md.
 
-    Возвращает per-файл результат. Невалидные пути / лимиты → status=error.
+    only_names — если задано, обрабатываются только эти имена; остальные
+    в архиве пропускаются полностью (даже не возвращаются в results).
+    Используется для retry'я по «пропущенным» — чтобы не перетереть скиллы,
+    которые при первом проходе создались успешно.
+
+    Невалидные пути / лимиты → status=error в результате (не валит весь импорт).
     """
     results: list[ImportResult] = []
     try:
@@ -142,37 +152,40 @@ def import_zip(data: bytes, *, overwrite: bool) -> list[ImportResult]:
     except zipfile.BadZipFile:
         raise ValueError("not a zip archive")
 
-    total = sum(zi.file_size for zi in archive.infolist())
-    if total > MAX_ARCHIVE_SIZE:
-        raise ValueError("archive too large")
+    with archive:
+        total = sum(zi.file_size for zi in archive.infolist())
+        if total > MAX_ARCHIVE_SIZE:
+            raise ValueError("archive too large")
 
-    seen: set[str] = set()
-    for info in archive.infolist():
-        if info.is_dir():
-            continue
-        path = info.filename
-        # Ожидаем строго "{name}/SKILL.md", без подпапок и без traversal.
-        parts = path.split("/")
-        if len(parts) != 2 or parts[1] != SKILL_FILENAME:
-            results.append(ImportResult(name=path, status="error", error="invalid path"))
-            continue
-        name = parts[0]
-        if name in seen:
-            continue
-        seen.add(name)
-        if not is_valid_name(name):
-            results.append(ImportResult(name=name, status="error", error="invalid name"))
-            continue
-        if info.file_size > MAX_SKILL_SIZE:
-            results.append(ImportResult(name=name, status="error", error="file too large"))
-            continue
+        seen: set[str] = set()
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            path = info.filename
+            # Ожидаем строго "{name}/SKILL.md", без подпапок и без traversal.
+            parts = path.split("/")
+            if len(parts) != 2 or parts[1] != SKILL_FILENAME:
+                results.append(ImportResult(name=path, status="error", error="invalid path"))
+                continue
+            name = parts[0]
+            if name in seen:
+                continue
+            seen.add(name)
+            if only_names is not None and name not in only_names:
+                continue
+            if not is_valid_name(name):
+                results.append(ImportResult(name=name, status="error", error="invalid name"))
+                continue
+            if info.file_size > MAX_SKILL_SIZE:
+                results.append(ImportResult(name=name, status="error", error="file too large"))
+                continue
 
-        content = archive.read(info).decode("utf-8", errors="replace")
-        try:
-            status = write_skill(name, content, overwrite=overwrite)
-        except ValueError as exc:
-            results.append(ImportResult(name=name, status="error", error=str(exc)))
-            continue
-        results.append(ImportResult(name=name, status=status, error=None))
+            content = archive.read(info).decode("utf-8", errors="replace")
+            try:
+                status = write_skill(name, content, overwrite=overwrite)
+            except ValueError as exc:
+                results.append(ImportResult(name=name, status="error", error=str(exc)))
+                continue
+            results.append(ImportResult(name=name, status=status, error=None))
 
     return results

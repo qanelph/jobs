@@ -300,13 +300,21 @@ def create_app() -> FastAPI:
         archive: UploadFile = File(...),
         authorization: str = Header(...),
         overwrite: bool = Query(False),
+        names: list[str] | None = Query(None),
     ) -> dict[str, Any]:
+        """Импорт скиллов из ZIP.
+
+        names — фильтр по именам: если задан, обрабатывается только это
+        подмножество архива (используется при retry'е «пропущенных», чтобы
+        не перетереть уже созданные скиллы).
+        """
         _verify_secret(authorization)
         data = await archive.read()
         if len(data) > skills_storage.MAX_ARCHIVE_SIZE:
             raise HTTPException(status_code=413, detail="archive too large")
+        only = set(names) if names else None
         try:
-            results = skills_storage.import_zip(data, overwrite=overwrite)
+            results = skills_storage.import_zip(data, overwrite=overwrite, only_names=only)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return {"results": results}

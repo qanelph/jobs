@@ -110,6 +110,12 @@ class UsersRepository:
         except sqlite3.OperationalError:
             pass  # column already exists
 
+        # Миграция: получатели фоновых отчётов
+        try:
+            await self._db.execute("ALTER TABLE tasks ADD COLUMN recipient_ids TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
         # Миграция из старых таблиц (user_tasks → tasks)
         await self._migrate_old_tables()
 
@@ -532,6 +538,7 @@ class UsersRepository:
         context: dict | None = None,
         schedule_at: datetime | None = None,
         schedule_repeat: int | None = None,
+        recipient_ids: list[int] | None = None,
     ) -> Task:
         """Создаёт задачу."""
         import json
@@ -539,19 +546,24 @@ class UsersRepository:
         task_id = str(uuid.uuid4())[:8]
         now = datetime.now().isoformat()
         context_json = json.dumps(context or {}, ensure_ascii=False)
+        recipients_json = (
+            json.dumps(recipient_ids) if recipient_ids is not None else None
+        )
 
         await db.execute(
             """
             INSERT INTO tasks (id, title, kind, assignee_id, created_by, deadline,
-                               created_at, updated_at, context, schedule_at, schedule_repeat)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               created_at, updated_at, context, schedule_at, schedule_repeat,
+                               recipient_ids)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (task_id, title, kind, assignee_id, created_by,
              deadline.isoformat() if deadline else None, now, now, context_json,
-             schedule_at.isoformat() if schedule_at else None, schedule_repeat),
+             schedule_at.isoformat() if schedule_at else None, schedule_repeat,
+             recipients_json),
         )
         await db.commit()
-        logger.info(f"Task created: [{task_id}] kind={kind} assignee={assignee_id}")
+        logger.info(f"Task created: [{task_id}] kind={kind} assignee={assignee_id} recipients={recipient_ids}")
 
         return await self.get_task(task_id)
 

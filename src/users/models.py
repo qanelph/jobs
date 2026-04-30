@@ -73,6 +73,11 @@ class Task:
     next_step: str | None = None             # Текущий шаг для heartbeat
     session_id: str | None = None            # Claude SDK session ID для persistent сессии
 
+    # Получатели отчётов (для kind="scheduled" и фоновых нотификаций).
+    # None = backward compat (fallback на primary), [] = не слать никому,
+    # [123, 456] = broadcast этим owner'ам.
+    recipient_ids: list[int] | None = None
+
     @property
     def is_overdue(self) -> bool:
         """Просрочена ли задача."""
@@ -104,4 +109,5 @@ class Task:
             schedule_repeat=row.get("schedule_repeat"),
             next_step=row.get("next_step"),
             session_id=row.get("session_id"),
+            recipient_ids=json.loads(row["recipient_ids"]) if row.get("recipient_ids") else None,
         )

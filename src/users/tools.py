@@ -9,6 +9,7 @@ MCP Tools — инструменты для работы с пользовате
 import asyncio
 import json
 import re
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Any, Callable, Awaitable
 
@@ -16,6 +17,38 @@ from claude_agent_sdk import tool
 from loguru import logger
 
 from .repository import get_users_repository
+
+
+# Текущий инициатор разговора — set'ится в handlers перед session.query*.
+# Унаследуется в task'и asyncio через Task.copy_context(), так что ContextVar
+# виден внутри Claude SDK и tools. Используется для адресации tg_send_message,
+# нотификаций create_task/ban_user/update_task — чтобы при нескольких owner'ах
+# писать тому, кто реально инициировал разговор.
+_current_user_id_var: ContextVar[int | None] = ContextVar("current_user_id", default=None)
+
+
+def set_current_user(telegram_id: int) -> None:
+    """Устанавливает ID инициатора текущего query (owner или external)."""
+    _current_user_id_var.set(telegram_id)
+
+
+def get_current_user_id() -> int | None:
+    """ID инициатора текущего query. None если зов из скрипта/миграции."""
+    return _current_user_id_var.get()
+
+
+def get_current_owner_id() -> int | None:
+    """current_user_id если это owner, иначе None.
+
+    Для адресации нотификаций, которые должны идти owner'у. Если current —
+    external user (например, в external-сессии), возвращаем None и caller
+    делает fallback на primary_owner_id.
+    """
+    from src.config import settings
+    uid = _current_user_id_var.get()
+    if uid is not None and settings.is_owner(uid):
+        return uid
+    return None
 
 
 # Telegram sender (устанавливается один раз при старте)
@@ -107,7 +140,7 @@ async def create_task(args: dict[str, Any]) -> dict[str, Any]:
         title=title,
         kind=kind,
         assignee_id=user.telegram_id,
-        created_by=settings.primary_owner_id,
+        created_by=get_current_owner_id() or settings.primary_owner_id,
         deadline=deadline,
         context=context,
     )
@@ -293,7 +326,7 @@ async def ban_user(args: dict[str, Any]) -> dict[str, Any]:
     if _telegram_sender:
         username = f" (@{user.username})" if user.username else ""
         await _telegram_sender(
-            settings.primary_owner_id,
+            get_current_owner_id() or settings.primary_owner_id,
             f"Пользователь {user.display_name}{username} забанен"
         )
 
@@ -330,7 +363,7 @@ async def unban_user(args: dict[str, Any]) -> dict[str, Any]:
     if _telegram_sender:
         username = f" (@{user.username})" if user.username else ""
         await _telegram_sender(
-            settings.primary_owner_id,
+            get_current_owner_id() or settings.primary_owner_id,
             f"Пользователь {user.display_name}{username} разбанен"
         )
 
@@ -438,17 +471,18 @@ async def update_task(args: dict[str, Any]) -> dict[str, Any]:
                 if session._session_id and session._session_id != task.session_id:
                     await repo.update_task_session(task_id, session._session_id)
 
-                # Уведомляем owner'а если нужно
+                # Уведомляем создателя задачи (или primary как fallback)
                 if content and _telegram_sender:
                     from src.config import settings as _s
-                    await _telegram_sender(_s.primary_owner_id, f"💎 Обновлена [{task_id}]:\n{content[:500]}")
+                    recipient = task.created_by or _s.primary_owner_id
+                    await _telegram_sender(recipient, f"💎 Обновлена [{task_id}]:\n{content[:500]}")
             except Exception as e:
                 logger.error(f"Task followup [{task_id}] failed: {e}")
 
         asyncio.create_task(_run_task_followup())
         logger.info(f"Launched persistent task session for [{task_id}] with skill={skill}")
     elif _context_sender:
-        # Fallback: inject в контекст owner'а + autonomous query
+        # Inject в контекст создателя задачи + autonomous query
         detail_parts = []
         if status:
             detail_parts.append(f"Статус: {status}")
@@ -459,7 +493,8 @@ async def update_task(args: dict[str, Any]) -> dict[str, Any]:
         if details:
             details = _sanitize_tags(details)
             message += f"\n<message-body>\n{details}\n</message-body>"
-        await _context_sender(settings.primary_owner_id, message)
+        recipient = task.created_by or settings.primary_owner_id
+        await _context_sender(recipient, message)
 
     return _text(f"💎 Обновлена [{task_id}], владелец уведомлён")
 
@@ -487,8 +522,17 @@ async def send_summary_to_owner(args: dict[str, Any]) -> dict[str, Any]:
     message = f"<sender-meta>Сводка от {user_name} (ID: {user_id})</sender-meta>\n<message-body>\n{summary}\n</message-body>"
 
     if _context_sender:
-        await _context_sender(settings.primary_owner_id, message)
-        logger.info(f"Summary sent to owner context from {user_name}")
+        # Если у external'а есть открытая задача — шлём её создателю.
+        # Иначе fallback на primary (нет привязки к конкретному owner'у).
+        recipient = settings.primary_owner_id
+        tasks = await repo.list_tasks(assignee_id=user_id, include_done=False)
+        if tasks:
+            # Берём самую свежую — она актуальна для контекста сводки.
+            tasks_sorted = sorted(tasks, key=lambda t: t.created_at, reverse=True)
+            if tasks_sorted[0].created_by:
+                recipient = tasks_sorted[0].created_by
+        await _context_sender(recipient, message)
+        logger.info(f"Summary sent to owner context from {user_name} (recipient={recipient})")
         return _text("Сводка отправлена владельцу")
     else:
         return _error("Context sender не настроен")

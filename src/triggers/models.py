@@ -17,6 +17,9 @@ class TriggerEvent:
     preview_message: str | None = None     # "Выполняю задачу..." → отправить ДО query
     silent_marker: str | None = None       # "HEARTBEAT_OK" → не доставлять результат
     result_prefix: str | None = None       # "Результат [id]:" → добавить к ответу
+    # Кому слать notify_owner / preview_message. None = primary owner (backward compat),
+    # [] = не слать никому (выключено), [123, 456] = broadcast.
+    recipient_ids: list[int] | None = None
 
 
 @dataclass
@@ -29,3 +32,6 @@ class TriggerSubscription:
     prompt: str = ""
     active: bool = True
     created_at: datetime = field(default_factory=datetime.now)
+    # Получатели срабатываний. None = backward compat (primary owner),
+    # [] = не доставлять никому, [123, 456] = broadcast этим owner'ам.
+    recipient_ids: list[int] | None = None

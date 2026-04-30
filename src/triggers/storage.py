@@ -50,9 +50,15 @@ class TriggerStorage:
                 config TEXT DEFAULT '{}',
                 prompt TEXT NOT NULL,
                 active INTEGER DEFAULT 1,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                recipient_ids TEXT
             )
         """)
+        # Идемпотентная миграция для существующих БД.
+        try:
+            await db.execute("ALTER TABLE trigger_subscriptions ADD COLUMN recipient_ids TEXT")
+        except aiosqlite.OperationalError:
+            pass  # column already exists
         await db.commit()
         logger.debug("TriggerStorage schema initialized")
 
@@ -73,14 +79,22 @@ class TriggerStorage:
         return [self._row_to_sub(row) for row in rows]
 
     async def create(
-        self, trigger_type: str, config: dict, prompt: str
+        self,
+        trigger_type: str,
+        config: dict,
+        prompt: str,
+        recipient_ids: list[int] | None = None,
     ) -> TriggerSubscription:
         """Создаёт новую подписку."""
         sub_id = uuid.uuid4().hex[:8]
         db = await self._get_db()
+        recipients_json = (
+            json.dumps(recipient_ids) if recipient_ids is not None else None
+        )
         await db.execute(
-            "INSERT INTO trigger_subscriptions (id, trigger_type, config, prompt) VALUES (?, ?, ?, ?)",
-            (sub_id, trigger_type, json.dumps(config, ensure_ascii=False), prompt),
+            "INSERT INTO trigger_subscriptions (id, trigger_type, config, prompt, recipient_ids) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (sub_id, trigger_type, json.dumps(config, ensure_ascii=False), prompt, recipients_json),
         )
         await db.commit()
 
@@ -89,6 +103,7 @@ class TriggerStorage:
             trigger_type=trigger_type,
             config=config,
             prompt=prompt,
+            recipient_ids=recipient_ids,
         )
 
     async def delete(self, subscription_id: str) -> bool:
@@ -120,6 +135,9 @@ class TriggerStorage:
             datetime.fromisoformat(created_str) if created_str else datetime.now()
         )
 
+        recipient_raw = row["recipient_ids"] if "recipient_ids" in row.keys() else None
+        recipient_ids = json.loads(recipient_raw) if recipient_raw else None
+
         return TriggerSubscription(
             id=row["id"],
             trigger_type=row["trigger_type"],
@@ -127,6 +145,7 @@ class TriggerStorage:
             prompt=row["prompt"],
             active=bool(row["active"]),
             created_at=created_at,
+            recipient_ids=recipient_ids,
         )
 
     async def close(self) -> None:

@@ -52,12 +52,14 @@ def build_owner_prompt(has_telethon: bool) -> str:
     if has_telethon:
         triggers_section = """## Подписки на события
 
-- `subscribe_trigger(type, config, prompt)` — подписаться на источник событий
+- `subscribe_trigger(type, config, prompt, recipient_ids?)` — подписаться на источник событий
 - `unsubscribe_trigger(subscription_id)` — отписаться
 - `list_triggers()` — показать активные подписки
 
 Типы: `tg_channel` (config: `{channel: "@name"}`).
-Prompt — инструкция при срабатывании: "Сделай сводку", "Переведи на русский"."""
+Prompt — инструкция при срабатывании: "Сделай сводку", "Переведи на русский".
+recipient_ids — кому слать срабатывания. По умолчанию — тебе одному (тот, кто создаёт подписку).
+Передай `[id1, id2]` чтобы отчитываться нескольким, `[]` чтобы вообще никому не слать."""
     else:
         triggers_section = """## Подписки на события
 
@@ -175,12 +177,14 @@ Timezone: {_TZ}
 
 ## Планирование
 
-- `schedule_task(title, prompt?, time, repeat?)` — создать задачу по расписанию
+- `schedule_task(title, prompt?, time, repeat?, recipient_ids?)` — создать задачу по расписанию
 - `cancel_task(task_id)` — отменить любую задачу
 - `list_tasks(kind="scheduled")` — посмотреть запланированные задачи
 - `read_task_context(task_id)` — прочитать контекст выполненной задачи (prompt + result)
 
 Когда берёшь обязательство на расписание — ВСЕГДА используй `schedule_task`.
+recipient_ids — кому слать отчёт. По умолчанию тебе (тот, кто планирует).
+Передай `[]` чтобы выполнять задачу молча, без отчётов в чат.
 Контекст background задач сохраняется — используй `read_task_context("recent")` для списка.
 
 {triggers_section}

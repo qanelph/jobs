@@ -32,6 +32,7 @@ class TelegramChannelTrigger:
         transport: "Transport",
         config: dict,
         prompt: str,
+        recipient_ids: list[int] | None = None,
     ) -> None:
         if transport.mode != TransportMode.TELETHON:
             raise ValueError("TelegramChannelTrigger требует Telethon-транспорт")
@@ -42,6 +43,7 @@ class TelegramChannelTrigger:
         self._client = telethon_transport.client
         self._channel: str = config["channel"]
         self._prompt = prompt
+        self._recipient_ids = recipient_ids
         self._handler = None
         self._event_filter = None
 
@@ -86,6 +88,7 @@ class TelegramChannelTrigger:
             source=f"tg_channel:{self._channel}",
             prompt=full_prompt,
             context={"channel": self._channel, "message_id": post.id},
+            recipient_ids=self._recipient_ids,
         )
 
         try:

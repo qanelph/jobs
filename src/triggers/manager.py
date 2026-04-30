@@ -28,9 +28,9 @@ class TriggerSource(Protocol):
     async def stop(self) -> None: ...
 
 
-# Factory: (executor, transport, config, prompt) → TriggerSource
+# Factory: (executor, transport, config, prompt, recipient_ids) → TriggerSource
 TriggerFactory = Callable[
-    [TriggerExecutor, "Transport", dict, str],
+    [TriggerExecutor, "Transport", dict, str, list[int] | None],
     TriggerSource,
 ]
 
@@ -98,7 +98,11 @@ class TriggerManager:
         logger.info("TriggerManager stopped")
 
     async def subscribe(
-        self, trigger_type: str, config: dict, prompt: str
+        self,
+        trigger_type: str,
+        config: dict,
+        prompt: str,
+        recipient_ids: list[int] | None = None,
     ) -> TriggerSubscription:
         """Создаёт подписку и запускает source. Откатывает при ошибке старта."""
         if trigger_type not in self._type_registry:
@@ -121,7 +125,7 @@ class TriggerManager:
                     f"Подписка на {trigger_type} с такой конфигурацией уже существует [{s.id}]"
                 )
 
-        sub = await self._storage.create(trigger_type, config, prompt)
+        sub = await self._storage.create(trigger_type, config, prompt, recipient_ids)
 
         try:
             await self._start_subscription_strict(sub)
@@ -129,7 +133,7 @@ class TriggerManager:
             await self._storage.delete(sub.id)
             raise ValueError(f"Не удалось запустить триггер: {e}") from e
 
-        logger.info(f"Subscribed [{sub.id}]: {trigger_type} {config}")
+        logger.info(f"Subscribed [{sub.id}]: {trigger_type} {config} recipients={recipient_ids}")
         return sub
 
     async def unsubscribe(self, subscription_id: str) -> bool:
@@ -153,7 +157,7 @@ class TriggerManager:
         if not factory:
             raise ValueError(f"Нет factory для типа '{sub.trigger_type}'")
 
-        source = factory(self._executor, self._transport, sub.config, sub.prompt)
+        source = factory(self._executor, self._transport, sub.config, sub.prompt, sub.recipient_ids)
         await source.start()
         self._dynamic[sub.id] = source
         logger.info(f"Dynamic trigger started [{sub.id}]: {sub.trigger_type}")

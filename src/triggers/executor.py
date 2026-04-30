@@ -41,19 +41,21 @@ class TriggerExecutor:
         """
         Выполняет событие триггера в одноразовой сессии.
 
-        1. Отправляет preview_message owner'у (если есть)
+        1. Отправляет preview_message получателям (если есть)
         2. Запрашивает агента через ephemeral background session
         3. Проверяет silent_marker — если есть, не доставляет
-        4. Добавляет result_prefix, truncate, отправляет owner'у
+        4. Добавляет result_prefix, truncate, отправляет получателям
 
         Returns:
             Ответ агента или None (если silent).
         """
         logger.debug(f"Executing trigger event: {event.source}")
 
+        recipients = self._resolve_recipients(event)
+
         # Preview (без буферизации — это просто уведомление)
         if event.preview_message and event.notify_owner:
-            await self.send_to_owner(event.preview_message, buffer=False)
+            await self._deliver(event.preview_message, recipients, buffer=False)
 
         # Одноразовая сессия с owner tools
         session = self._session_manager.create_background_session()
@@ -95,24 +97,47 @@ class TriggerExecutor:
 
         # Deliver
         if event.notify_owner:
-            await self.send_to_owner(content)
+            await self._deliver(content, recipients, buffer=True)
 
         return content
 
+    @staticmethod
+    def _resolve_recipients(event: TriggerEvent) -> list[int]:
+        """None = primary (backward compat), иначе явный список (может быть пустым)."""
+        if event.recipient_ids is None:
+            return [settings.primary_owner_id]
+        return list(event.recipient_ids)
+
+    async def _deliver(
+        self,
+        text: str,
+        recipients: list[int],
+        *,
+        buffer: bool,
+    ) -> None:
+        """Доставляет сообщение каждому получателю и (опционально) буферизует
+        в его сессию, чтобы Claude увидел контекст при следующем взаимодействии.
+
+        Ошибка доставки одному получателю не должна блокировать остальных.
+        """
+        if not recipients:
+            logger.debug("Trigger delivery skipped — recipients=[] (выключено)")
+            return
+        for uid in recipients:
+            try:
+                await self._transport.send_message(uid, text)
+                if buffer:
+                    self._session_manager.get_session(uid).receive_incoming(
+                        f"[Background task output]\n{text}"
+                    )
+            except Exception:
+                logger.opt(exception=True).warning(
+                    f"Trigger delivery failed for recipient={uid}"
+                )
+
     async def send_to_owner(self, text: str, buffer: bool = True) -> None:
-        """
-        Отправляет сообщение owner'у.
-
-        Args:
-            text: текст сообщения
-            buffer: буферизовать в owner session (для сохранения контекста)
-        """
-        await self._transport.send_message(settings.primary_owner_id, text)
-
-        # Буферизуем в owner session чтобы сохранить контекст
-        if buffer:
-            owner_session = self._session_manager.get_session(settings.primary_owner_id)
-            owner_session.receive_incoming(f"[Background task output]\n{text}")
+        """Backward-compat shim: шлёт primary owner'у. Новый код использует event.recipient_ids."""
+        await self._deliver(text, [settings.primary_owner_id], buffer=buffer)
 
     def _save_transcript(
         self,

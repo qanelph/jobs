@@ -58,8 +58,10 @@ def _parse_config(raw: Any) -> dict:
     "Subscribe to an event source. "
     "Types: tg_channel. "
     'Config for tg_channel: {"channel": "@channel_name"}. '
-    "Prompt: instruction for agent when event fires.",
-    {"type": str, "config": dict, "prompt": str},
+    "Prompt: instruction for agent when event fires. "
+    "recipient_ids: список Telegram ID кому слать срабатывания. "
+    "По умолчанию — текущий инициатор разговора. Передай [] чтобы выключить уведомления.",
+    {"type": str, "config": dict, "prompt": str, "recipient_ids": list},
 )
 async def subscribe_trigger(args: dict[str, Any]) -> dict[str, Any]:
     logger.info(f"subscribe_trigger called: {args!r}")
@@ -74,7 +76,24 @@ async def subscribe_trigger(args: dict[str, Any]) -> dict[str, Any]:
         logger.error(f"subscribe_trigger config parse error: {e}, raw={args.get('config')!r}")
         return _error(f"Неверный формат config: {e}")
 
-    logger.info(f"subscribe_trigger parsed: type={trigger_type}, config={config}, prompt={prompt[:50]}")
+    # Получатели: если не передано — текущий инициатор; если передано (включая []) — берём как есть
+    if "recipient_ids" in args and args["recipient_ids"] is not None:
+        raw = args["recipient_ids"]
+        if not isinstance(raw, list):
+            return _error("recipient_ids должен быть списком")
+        try:
+            recipient_ids = [int(x) for x in raw]
+        except (TypeError, ValueError):
+            return _error("recipient_ids должен содержать только числа (Telegram ID)")
+    else:
+        from src.users.tools import get_current_user_id
+        current = get_current_user_id()
+        recipient_ids = [current] if current is not None else None
+
+    logger.info(
+        f"subscribe_trigger parsed: type={trigger_type}, config={config}, "
+        f"prompt={prompt[:50]}, recipients={recipient_ids}"
+    )
 
     if not trigger_type:
         return _error("type обязателен")
@@ -88,13 +107,16 @@ async def subscribe_trigger(args: dict[str, Any]) -> dict[str, Any]:
     manager = get_trigger_manager()
 
     try:
-        sub = await manager.subscribe(trigger_type, config, prompt)
+        sub = await manager.subscribe(trigger_type, config, prompt, recipient_ids)
     except ValueError as e:
         logger.warning(f"subscribe_trigger failed: {e}")
         return _error(str(e))
 
     logger.info(f"subscribe_trigger success: [{sub.id}] {trigger_type}")
-    return _text(f"Подписка [{sub.id}] создана: {trigger_type} {config}")
+    recipients_str = (
+        f", получатели: {recipient_ids}" if recipient_ids is not None else ""
+    )
+    return _text(f"Подписка [{sub.id}] создана: {trigger_type} {config}{recipients_str}")
 
 
 @tool(
@@ -136,8 +158,11 @@ async def list_triggers(args: dict[str, Any]) -> dict[str, Any]:
 
     lines = []
     for sub in subs:
+        recipients = (
+            f" | получатели: {sub.recipient_ids}" if sub.recipient_ids is not None else ""
+        )
         lines.append(
-            f"[{sub.id}] {sub.trigger_type} | {sub.config} | {sub.prompt[:50]}"
+            f"[{sub.id}] {sub.trigger_type} | {sub.config} | {sub.prompt[:50]}{recipients}"
         )
 
     return _text("\n".join(lines))

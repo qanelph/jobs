@@ -43,6 +43,9 @@ def _resolve_field_type(field_name: str) -> str:
     if origin is Union or isinstance(annotation, types.UnionType):
         args = [a for a in get_args(annotation) if a is not type(None)]
         annotation = args[0] if args else annotation
+    # bool раньше int — bool это subclass int в Python, нельзя проверять int первым.
+    if annotation is bool:
+        return "bool"
     if annotation is int:
         return "int"
     if annotation is str:

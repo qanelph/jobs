@@ -47,10 +47,18 @@ MODEL_ALIASES: dict[str, str] = {
 
 
 def resolve_model_alias(model: str | None) -> str | None:
-    """`haiku`/`sonnet`/`opus` → текущая версия серии. Полное имя — как есть."""
+    """`haiku`/`sonnet`/`opus` → текущая версия серии. Полное имя — как есть.
+
+    Сначала пробуем динамический кэш (фетчится из Anthropic /v1/models раз в час),
+    fallback на хардкод MODEL_ALIASES, если кэш пуст или API недоступен.
+    """
     if not model:
         return None
-    return MODEL_ALIASES.get(model.lower(), model)
+    key = model.lower()
+    if key in MODEL_ALIASES:
+        from src.anthropic_models import get_latest_model
+        return get_latest_model(key) or MODEL_ALIASES[key]
+    return model
 
 
 class UserSession:

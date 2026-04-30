@@ -240,6 +240,10 @@ async def main() -> None:
 
     asyncio.create_task(_auto_check_updates())
 
+    # Динамический кэш моделей Claude (раз в час GET /v1/models)
+    from src.anthropic_models import refresh_loop as _models_refresh_loop
+    asyncio.create_task(_models_refresh_loop())
+
     # HTTP API (порт 8080 — для управления конфигом из оркестратора).
     # 0.0.0.0 безопасен: слушает внутри Docker-сети агента,
     # порт НЕ должен пробрасываться в docker-compose ports.

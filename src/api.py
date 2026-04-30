@@ -97,6 +97,7 @@ class PatchConfig(BaseModel):
     tg_api_hash: str | None = None
     tg_user_id: int | None = None
     tg_owner_ids: list[int] | None = None
+    ignore_external_users: bool | None = None
 
 
 # Гарантируем синхронность PatchConfig и MUTABLE_FIELDS — упадёт при импорте если разойдутся

@@ -26,6 +26,12 @@ from .repository import get_users_repository
 # писать тому, кто реально инициировал разговор.
 _current_user_id_var: ContextVar[int | None] = ContextVar("current_user_id", default=None)
 
+# chat_id текущего разговора — место, КУДА надо отвечать когда tool вызван без явного
+# адресата. Для приватки совпадает с user_id, для группы это id группы. Использовать
+# user_id как «куда отвечать» нельзя: в группе sender ≠ chat, и ответ уйдёт в личку
+# отправителю, а не в общий чат.
+_current_chat_id_var: ContextVar[int | None] = ContextVar("current_chat_id", default=None)
+
 
 def set_current_user(telegram_id: int) -> None:
     """Устанавливает ID инициатора текущего query (owner или external)."""
@@ -35,6 +41,16 @@ def set_current_user(telegram_id: int) -> None:
 def get_current_user_id() -> int | None:
     """ID инициатора текущего query. None если зов из скрипта/миграции."""
     return _current_user_id_var.get()
+
+
+def set_current_chat(chat_id: int) -> None:
+    """Устанавливает chat_id текущего разговора (группа или приватка)."""
+    _current_chat_id_var.set(chat_id)
+
+
+def get_current_chat_id() -> int | None:
+    """chat_id текущего разговора. Для приватки совпадает с user_id, для группы — id группы."""
+    return _current_chat_id_var.get()
 
 
 def get_current_owner_id() -> int | None:

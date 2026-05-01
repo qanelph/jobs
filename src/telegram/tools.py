@@ -68,14 +68,14 @@ def _get_client() -> TelegramClient:
 @tool(
     "tg_send_message",
     "Send a text message to any chat, channel, or user. Chat can be @username, phone, or ID. "
-    "If chat is omitted, the message is sent to the user who initiated the current conversation "
-    "(or primary owner as fallback).",
+    "If chat is omitted, the message goes to the chat where the current conversation is happening "
+    "(group chat for groups, sender for private chats). Use this default for replies.",
     {"chat": str, "message": str, "reply_to": int},
 )
 async def tg_send_message(args: dict[str, Any]) -> dict[str, Any]:
     """Отправляет текстовое сообщение через primary transport."""
-    from src.users.tools import get_current_user_id
-    chat = args.get("chat") or get_current_user_id() or settings.primary_owner_id
+    from src.users.tools import get_current_chat_id
+    chat = args.get("chat") or get_current_chat_id() or settings.primary_owner_id
     message = args.get("message")
     reply_to = args.get("reply_to")
 

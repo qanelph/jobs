@@ -20,7 +20,7 @@ from loguru import logger
 
 from src.config import settings, set_owner_info
 from src.users import get_session_manager, get_users_repository
-from src.users.tools import set_telegram_sender, set_context_sender, set_buffer_sender, set_task_executor, set_current_user
+from src.users.tools import set_telegram_sender, set_context_sender, set_buffer_sender, set_task_executor, set_current_user, set_current_chat
 from src.triggers.executor import TriggerExecutor
 from src.media import transcribe_audio, save_media, MAX_MEDIA_SIZE
 from src.updater import Updater
@@ -299,6 +299,7 @@ class TelegramHandlers:
             )
 
             set_current_user(user_id)
+            set_current_chat(user_id)  # autonomous follow-up — приватка owner'а
 
             response = await session.query(prompt)
 
@@ -433,6 +434,8 @@ class TelegramHandlers:
 
         # Контекст для tools: send-tools будут писать тому, кто инициировал диалог.
         set_current_user(user_id)
+        # Куда отвечать по умолчанию — в текущий чат (для приватки совпадает с user_id).
+        set_current_chat(msg.chat_id)
 
         # Если сессия уже обрабатывает запрос — буферизуем в incoming
         if session._is_querying:
@@ -573,6 +576,8 @@ class TelegramHandlers:
 
         # Контекст для tools — sender owner'а в группе.
         set_current_user(msg.sender_id)
+        # Куда отвечать по умолчанию — в саму группу, не в личку отправителю.
+        set_current_chat(msg.chat_id)
 
         # Если сессия уже обрабатывает запрос — буферизуем
         if session._is_querying:

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.session.middlewares.base import (
     BaseRequestMiddleware,
     NextRequestMiddlewareType,
@@ -22,6 +23,7 @@ from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from loguru import logger
 
+from src.config import settings
 from src.telegram.transport import (
     Transport,
     TransportMode,
@@ -142,7 +144,8 @@ class BotTransport:
     mode = TransportMode.BOT
 
     def __init__(self, token: str) -> None:
-        self._bot = Bot(token=token)
+        session = AiohttpSession(proxy=settings.http_proxy) if settings.http_proxy else None
+        self._bot = Bot(token=token, session=session)
         self._bot.session.middleware(_RetryOnFloodMiddleware())
         self._dp = Dispatcher()
         self._running = False

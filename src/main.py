@@ -52,6 +52,26 @@ def _has_telethon_session() -> bool:
     return session is not None and len(session) > 0
 
 
+async def _connect_telethon_with_retries(client, attempts: int = 6) -> None:
+    """Подключает Telethon, переживая кратковременный флап egress-прокси.
+
+    Без этого один неудачный старт (прокси не добил MTProto-handshake) валит
+    процесс и уводит под в CrashLoopBackOff с растущим backoff.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            await client.connect()
+            return
+        except (ConnectionError, OSError, asyncio.TimeoutError) as exc:
+            if attempt == attempts:
+                raise
+            delay = min(2 ** attempt, 30)
+            logger.warning(
+                f"Telethon connect attempt {attempt}/{attempts} failed: {exc}. Retry in {delay}s"
+            )
+            await asyncio.sleep(delay)
+
+
 async def _pull_credentials_on_start() -> None:
     """Запрос credentials у оркестратора при старте (K8s mode). Retry 3 попытки."""
     from src.credentials import pull_credentials
@@ -119,7 +139,7 @@ async def main() -> None:
         telethon_client = client
 
         try:
-            await client.connect()
+            await _connect_telethon_with_retries(client)
 
             if not await client.is_user_authorized():
                 logger.error("Telegram Telethon сессия невалидна. Удалите data/telethon.session")

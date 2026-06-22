@@ -47,6 +47,11 @@ def create_client(session: str | None = None) -> TelegramClient:
         system_version="23.5.0",
         app_version="1.36.0",
         proxy=proxy,
+        # Egress в Telegram идёт через внешний HTTP-прокси, который иногда
+        # флапает — даём клиенту больше попыток на каждое подключение.
+        connection_retries=10,
+        retry_delay=2,
+        timeout=30,
     )
 
 
